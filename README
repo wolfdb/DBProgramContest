@@ -1,6 +1,24 @@
 This file must contain information about the submission, including:
-  - team name
-  - for each team member: full name, e-mail, institution, department, and degree program
-  - advisor/supervisor name (if any)
-  - a brief description of the solution
-  - a list of the third party code used and their licenses
+  - DBer never mess up
+  - Zhao Junwang <zhaojunwang.zjw@alibaba-inc.com>; Li Yang <jianli.ly@alibaba-inc.com>
+
+Use docker to build and run the test.
+```
+docker build -t dbtest .
+docker run -v $(pwd):/home/contest/dbtest -d -it --name=dbtest dbtest bash
+docker exec -it dbtest bash
+```
+
+Compile
+```
+./complile.sh
+```
+
+Run Harness Test
+```
+#run small workload
+./runTestharness.sh
+
+#run public workload
+./runTestharness.sh workloads/public
+```
