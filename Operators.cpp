@@ -19,7 +19,7 @@ void Scan::run()
   // Run
 {
   // Nothing to do
-  resultSize=relation.size;
+  resultSize=relation.rowCount;
 }
 //---------------------------------------------------------------------------
 vector<uint64_t*> Scan::getResults()
@@ -63,7 +63,7 @@ bool FilterScan::applyFilter(uint64_t i,FilterInfo& f)
     case FilterInfo::Comparison::Greater:
       return compareCol[i]>constant;
     case FilterInfo::Comparison::Less:
-       return compareCol[i]<constant;
+      return compareCol[i]<constant;
   };
   return false;
 }
@@ -71,7 +71,7 @@ bool FilterScan::applyFilter(uint64_t i,FilterInfo& f)
 void FilterScan::run()
   // Run
 {
-  for (uint64_t i=0;i<relation.size;++i) {
+  for (uint64_t i=0;i<relation.rowCount;++i) {
     bool pass=true;
     for (auto& f : filters) {
       pass&=applyFilter(i,f);

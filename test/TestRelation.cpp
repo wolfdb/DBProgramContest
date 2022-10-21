@@ -5,10 +5,10 @@
 //---------------------------------------------------------------------------
 static void ASSERT_RELATION_EQ(Relation& r1,Relation& r2)
 {
-  ASSERT_EQ(r1.size,r2.size);
+  ASSERT_EQ(r1.rowCount,r2.rowCount);
   ASSERT_EQ(r1.columns.size(),r2.columns.size());
   for (unsigned i=0;i<r1.columns.size();++i) {
-    ASSERT_EQ(memcmp(r1.columns[i],r2.columns[i],r1.size*sizeof(uint64_t)),0);
+    ASSERT_EQ(memcmp(r1.columns[i],r2.columns[i],r1.rowCount*sizeof(uint64_t)),0);
   }
 }
 //---------------------------------------------------------------------------

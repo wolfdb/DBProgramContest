@@ -14,7 +14,7 @@ class Relation {
 
   public:
   /// The number of tuples
-  uint64_t size;
+  uint64_t rowCount;
   /// The join column containing the keys
   std::vector<uint64_t*> columns;
 
@@ -26,7 +26,7 @@ class Relation {
   void dumpSQL(const std::string& fileName,unsigned relationId);
 
   /// Constructor without mmap
-  Relation(uint64_t size,std::vector<uint64_t*>&& columns) : ownsMemory(true), size(size), columns(columns) {}
+  Relation(uint64_t rowCount,std::vector<uint64_t*>&& columns) : ownsMemory(true), rowCount(rowCount), columns(columns) {}
   /// Constructor using mmap
   Relation(const char* fileName);
   /// Delete copy constructor

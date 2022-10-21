@@ -96,7 +96,7 @@ TEST_F(OperatorTest, Join) {
     join.require(SelectInfo(r1Bind,0));
     join.run();
 
-    ASSERT_EQ(join.resultSize,r1.size);
+    ASSERT_EQ(join.resultSize,r1.rowCount);
 
     auto resColId=join.resolve(SelectInfo{r1Bind,0});
     auto results=join.getResults();
@@ -118,7 +118,7 @@ TEST_F(OperatorTest, Join) {
     join.require(SelectInfo(r2Bind,3));
     join.run();
 
-    ASSERT_EQ(join.resultSize,r1.size);
+    ASSERT_EQ(join.resultSize,r1.rowCount);
 
     auto resColId=join.resolve(SelectInfo{r2Bind,3});
     auto results=join.getResults();
@@ -151,7 +151,7 @@ TEST_F(OperatorTest, Checksum) {
 
     ASSERT_EQ(checkSum.checkSums.size(),2ull);
     uint64_t expectedSum=0;
-    for (unsigned i=0;i<r1.size;++i) {
+    for (unsigned i=0;i<r1.rowCount;++i) {
       expectedSum+=r1.columns[0][i];
     }
     ASSERT_EQ(checkSum.checkSums[0],expectedSum);
@@ -179,7 +179,7 @@ TEST_F(OperatorTest, SelfJoin) {
     PredicateInfo pInfo(SelectInfo(1,relBinding,1),SelectInfo(1,relBinding,2));
     SelfJoin selfJoin(make_unique<Scan>(r1Scan),pInfo);
     selfJoin.run();
-    ASSERT_EQ(selfJoin.resultSize,r1.size);
+    ASSERT_EQ(selfJoin.resultSize,r1.rowCount);
     ASSERT_EQ(selfJoin.getResults().size(),0ull);
   }
   {
@@ -188,7 +188,7 @@ TEST_F(OperatorTest, SelfJoin) {
     selfJoin.require(SelectInfo(relBinding,0));
     selfJoin.run();
     selfJoin.resolve(SelectInfo(relBinding,0));
-    ASSERT_EQ(selfJoin.resultSize,r1.size);
+    ASSERT_EQ(selfJoin.resultSize,r1.rowCount);
     auto results=selfJoin.getResults();
     ASSERT_EQ(results.size(),1ull);
   }

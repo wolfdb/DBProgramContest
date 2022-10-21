@@ -12,11 +12,11 @@ void Relation::storeRelation(const string& fileName)
 {
   ofstream outFile;
   outFile.open(fileName,ios::out|ios::binary);
-  outFile.write((char*)&size,sizeof(size));
+  outFile.write((char*)&rowCount,sizeof(rowCount));
   auto numColumns=columns.size();
   outFile.write((char*)&numColumns,sizeof(size_t));
   for (auto c : columns) {
-    outFile.write((char*)c,size*sizeof(uint64_t));
+    outFile.write((char*)c,rowCount*sizeof(uint64_t));
   }
   outFile.close();
 }
@@ -26,7 +26,7 @@ void Relation::storeRelationCSV(const string& fileName)
 {
   ofstream outFile;
   outFile.open(fileName+".tbl",ios::out);
-  for (uint64_t i=0;i<size;++i) {
+  for (uint64_t i=0;i<rowCount;++i) {
     for (auto& c : columns) {
       outFile << c[i] << '|';
     }
@@ -75,13 +75,13 @@ void Relation::loadRelation(const char* fileName)
     throw;
   }
 
-  this->size=*reinterpret_cast<uint64_t*>(addr);
-  addr+=sizeof(size);
+  this->rowCount=*reinterpret_cast<uint64_t*>(addr);
+  addr+=sizeof(rowCount);
   auto numColumns=*reinterpret_cast<size_t*>(addr);
   addr+=sizeof(size_t);
   for (unsigned i=0;i<numColumns;++i) {
     this->columns.push_back(reinterpret_cast<uint64_t*>(addr));
-    addr+=size*sizeof(uint64_t);
+    addr+=rowCount*sizeof(uint64_t);
   }
 }
 //---------------------------------------------------------------------------
