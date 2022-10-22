@@ -65,3 +65,40 @@ TEST(Relation,CreateSQL) {
   ASSERT_FALSE(std::getline(infile, line));
 }
 //---------------------------------------------------------------------------
+TEST(Relation,CalcSampleCount) {
+  Relation r1 = Utils::createRelation(1,5);
+  r1.calcSampleCount();
+  ASSERT_EQ(r1.sampleCount, 1);
+
+  r1.rowCount = DBCONTEST_PAGE_ITEM_COUNT - 1;
+  r1.calcSampleCount();
+  ASSERT_EQ(r1.sampleCount, DBCONTEST_PAGE_ITEM_COUNT - 1);
+
+  r1.rowCount = DBCONTEST_PAGE_ITEM_COUNT;
+  r1.calcSampleCount();
+  ASSERT_EQ(r1.sampleCount, DBCONTEST_PAGE_ITEM_COUNT);
+
+  r1.rowCount = (DBCONTEST_PAGE_ITEM_COUNT << 4) - 1;
+  r1.calcSampleCount();
+  ASSERT_EQ(r1.sampleCount, DBCONTEST_PAGE_ITEM_COUNT);
+
+  r1.rowCount = (DBCONTEST_PAGE_ITEM_COUNT << 4) + 15;
+  r1.calcSampleCount();
+  ASSERT_EQ(r1.sampleCount, DBCONTEST_PAGE_ITEM_COUNT);
+
+  r1.rowCount = (DBCONTEST_PAGE_ITEM_COUNT << 4) + 16;
+  r1.calcSampleCount();
+  ASSERT_EQ(r1.sampleCount, DBCONTEST_PAGE_ITEM_COUNT + DBCONTEST_PAGE_ITEM_COUNT);
+
+  r1.rowCount = (MAX_SAMPLE_ITEM_COUNT << 4) - 1;
+  r1.calcSampleCount();
+  ASSERT_EQ(r1.sampleCount, MAX_SAMPLE_ITEM_COUNT);
+
+  r1.rowCount = (MAX_SAMPLE_ITEM_COUNT << 4);
+  r1.calcSampleCount();
+  ASSERT_EQ(r1.sampleCount, MAX_SAMPLE_ITEM_COUNT);
+
+  r1.rowCount = (MAX_SAMPLE_ITEM_COUNT << 4) + 16;
+  r1.calcSampleCount();
+  ASSERT_EQ(r1.sampleCount, MAX_SAMPLE_ITEM_COUNT);
+}

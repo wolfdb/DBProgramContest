@@ -15,6 +15,8 @@ int main(int argc, char* argv[]) {
    // Preparation phase (not timed)
    // Build histograms, indexes,...
    //
+   joiner.buildHistogram();
+
    QueryInfo i;
    while (getline(cin, line)) {
       if (line == "F") continue; // End of a batch

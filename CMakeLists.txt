@@ -1,4 +1,4 @@
-cmake_minimum_required (VERSION 2.6)
+cmake_minimum_required (VERSION 3.12)
 project (DBProgramContest)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -10,11 +10,16 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -fsanitize=address -Wall"
 
 include_directories(include)
 
+find_package(Boost 1.70 REQUIRED)
+include_directories(${Boost_INCLUDE_DIRS})
+
+find_package(TBB COMPONENTS tbbmalloc tbbmalloc_proxy tbb_preview)
+
 # remove this when submit
 add_subdirectory(fmt)
 
 add_library(database Relation.cpp Operators.cpp Parser.cpp Utils.cpp Joiner.cpp Log.cpp)
-target_link_libraries(database fmt::fmt)
+target_link_libraries(database fmt::fmt tbb)
 target_include_directories(database PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>

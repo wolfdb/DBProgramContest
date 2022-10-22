@@ -20,5 +20,9 @@ class Joiner {
   Relation& getRelation(unsigned id);
   /// Joins a given set of relations
   std::string join(QueryInfo& i);
+  /// Build histograms and indexs
+  void buildHistogram();
+
+  static int query_count;
 };
 //---------------------------------------------------------------------------
