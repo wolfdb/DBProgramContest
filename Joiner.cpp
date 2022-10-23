@@ -96,6 +96,17 @@ string Joiner::join(QueryInfo& query)
   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   set<unsigned> usedRelations;
 
+  // First calculate estimate row count for the Filter
+  for (auto &filter: query.filters) {
+    auto relId = query.relationIds[filter.filterColumn.binding];
+    getRelation(relId).calThenSetEstimateCost(filter);
+    out.print("filter:{}, eCost:{}, rowCount:{}, sorted:{}\n",
+      filter.comparison == FilterInfo::Comparison::Equal ? "=" : filter.comparison == FilterInfo::Comparison::Greater ? ">" : "<",
+      filter.eCost, filter.rowCount, filter.sorted);
+  }
+
+  // Second calculate estimate row count for Prediction
+
   // We always start with the first join predicate and append the other joins to it (--> left-deep join trees)
   // You might want to choose a smarter join ordering ...
   auto& firstJoin=query.predicates[0];

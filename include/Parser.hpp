@@ -48,6 +48,13 @@ struct FilterInfo {
    /// Dump SQL
    std::string dumpSQL();
 
+   /// Estimate cost, row count
+   uint64_t eCost;
+   /// Total row count for this scan
+   uint64_t rowCount;
+   /// Is the filtered column sorted
+   bool sorted;
+
    /// The constructor
    FilterInfo(SelectInfo filterColumn,uint64_t constant,Comparison comparison) : filterColumn(filterColumn), constant(constant), comparison(comparison) {};
    /// Dump text format

@@ -8,6 +8,7 @@
 #include "Consts.hpp"
 
 using RelationId = unsigned;
+struct FilterInfo;
 //---------------------------------------------------------------------------
 struct HolderOfStaticHistogram {
   // put axis types here
@@ -74,6 +75,9 @@ class Relation {
   void buildHistogram(int idx);
   /// print histogram of column i
   void printHistogram(int idx);
+
+  /// Calculate the estimate cost
+  void calThenSetEstimateCost(FilterInfo &filter);
 
   /// Constructor without mmap
   Relation(uint64_t rowCount,std::vector<uint64_t*>&& columns) : ownsMemory(true), rowCount(rowCount), columns(columns) {}

@@ -7,6 +7,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include "Relation.hpp"
+#include "Parser.hpp"
 #include "Log.hpp"
 //---------------------------------------------------------------------------
 using namespace std;
@@ -198,22 +199,87 @@ void Relation::printHistogram(int idx)
     out.print("Max: {}, Min: {}\n", this->maxs[idx], this->mins[idx]);
     out.print("Sorted, order: {}\n", this->orders[idx] == Order::ASC ? "ASC" : "DESC");
     out.print("  distinct values cnt: {}\n", this->distinct_count[idx]);
-    auto &h = this->histograms[idx].hist_;
-    for (auto&& x : indexed(h, coverage::all)) {
-      out.print("bin {} [{}, {}): {}\n", x.index(), x.bin().lower(), x.bin().upper(), *x);
-    }
+    // auto &h = this->histograms[idx].hist_;
+    // for (auto&& x : indexed(h, coverage::all)) {
+    //   out.print("bin {} [{}, {}): {}\n", x.index(), x.bin().lower(), x.bin().upper(), *x);
+    // }
   } else if (this->sorts[idx] == Sorted::Likely) {
     out.print("Max: {}, Min: {}\n", this->sample_maxs[idx], this->sample_mins[idx]);
     out.print(" order: {}\n", this->orders[idx] == Order::ASC ? "ASC" : "DESC");
-    out.print("  distinct values cnt: {}\n", this->sample_distinctVals[idx].size());
+    out.print("  distinct values cnt: {}\n", this->sample_distinct_count[idx]);
   } else {
     out.print("Max: {}, Min: {}\n", this->sample_maxs[idx], this->sample_mins[idx]);
     out.print("Unsorted\n");
     out.print("  distinct values cnt: {}\n", this->sample_distinctVals[idx].size());
-    auto &h = this->sample_histograms[idx].hist_;
-    for (auto&& x : indexed(h, coverage::all)) {
-      out.print("bin {} [{}, {}): {}\n", x.index(), x.bin().lower(), x.bin().upper(), *x);
+    // auto &h = this->sample_histograms[idx].hist_;
+    // for (auto&& x : indexed(h, coverage::all)) {
+    //   out.print("bin {} [{}, {}): {}\n", x.index(), x.bin().lower(), x.bin().upper(), *x);
+    // }
+  }
+}
+//---------------------------------------------------------------------------
+void Relation::calThenSetEstimateCost(FilterInfo &filter)
+  // Calculate the estimate cost
+{
+  unsigned idx = filter.filterColumn.colId;
+  auto sorted = sorts[idx];
+  auto ordered = orders[idx];
+  auto count = this->rowCount;
+  auto scount = this->sampleCount;
+  double sample_factor = static_cast<double>(count) / static_cast<double>(scount);
+  double fraction = 0.;
+  filter.rowCount = count;
+  filter.sorted = sorted == Sorted::Likely;
+  // out.print("colIdx:{}, rowCount:{}, sampleCount:{}, sample_max:{}, sample_min:{}, max:{}, min:{}\n", idx, count, scount, sample_maxs[idx], sample_mins[idx], maxs[idx], mins[idx]);
+  switch (filter.comparison)
+  {
+  case FilterInfo::Comparison::Equal:
+    if (sorted == Sorted::Likely) {
+      filter.eCost = (scount / this->sample_distinct_count[idx]);
+    } else {
+      // build concurrent unordered multimap?
+      filter.eCost = static_cast<uint64_t>((static_cast<double>(scount) / this->sample_distinctVals[idx].size()) * sample_factor);
     }
+    break;
+  case FilterInfo::Comparison::Greater:
+    if (sorted == Sorted::Likely) {
+      if (ordered == Order::ASC) {
+        fraction = static_cast<double>(maxs[idx] - filter.constant) / static_cast<double>(maxs[idx] - sample_mins[idx]);
+      } else {
+        fraction = static_cast<double>(sample_maxs[idx] - filter.constant) / static_cast<double>(sample_maxs[idx] - mins[idx]);
+      }
+      filter.eCost = static_cast<uint64_t>(count * fraction);
+    } else {
+      // build concurrent multimap?
+      if (filter.constant > sample_maxs[idx] || filter.constant < sample_mins[idx]) {
+        filter.eCost = count;
+      } else {
+        fraction = static_cast<double>(sample_maxs[idx] - filter.constant) / static_cast<double>(sample_maxs[idx] - sample_mins[idx]);
+        filter.eCost = static_cast<uint64_t>(count * fraction);
+      }
+    }
+    break;
+  case FilterInfo::Comparison::Less:
+    if (sorted == Sorted::Likely) {
+      if (ordered == Order::ASC) {
+        fraction = static_cast<double>(filter.constant - sample_mins[idx]) / static_cast<double>(maxs[idx] - sample_mins[idx]);
+      } else {
+        fraction = static_cast<double>(filter.constant - mins[idx]) / static_cast<double>(sample_maxs[idx] - mins[idx]);
+      }
+      filter.eCost = static_cast<uint64_t>(count * fraction);
+    } else {
+      // build concurrent multimap?
+      if (filter.constant > sample_maxs[idx] || filter.constant < sample_mins[idx]) {
+        filter.eCost = count;
+      } else {
+        fraction = static_cast<double>(filter.constant - sample_mins[idx]) / static_cast<double>(sample_maxs[idx] - sample_mins[idx]);
+        filter.eCost = static_cast<uint64_t>(count * fraction);
+      }
+    }
+    break;
+  default:
+    assert(false);
+    break;
   }
 }
 //---------------------------------------------------------------------------
