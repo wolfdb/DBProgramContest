@@ -20,6 +20,7 @@ RUN apt-get install -y libboost-dev
 RUN apt-get install -y clang
 RUN apt-get install -y libtbb-dev
 RUN apt-get install -y git
+RUN apt-get install -y gdb
 
 # Change user.
 USER contest
