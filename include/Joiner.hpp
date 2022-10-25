@@ -23,6 +23,14 @@ class Joiner {
   /// Build histograms and indexs
   void buildHistogram();
 
+  /// estimate the cost of SelectInfo
+  uint64_t estimateCost(const SelectInfo &info, const QueryInfo& query);
+
+  /// the orignal left-deep join tree
+  std::unique_ptr<Operator> buildPlanTree(QueryInfo& query);
+
+  /// my left-deep join tree
+  std::unique_ptr<Operator> buildMyPlanTree(QueryInfo& query);
   static int query_count;
 };
 //---------------------------------------------------------------------------

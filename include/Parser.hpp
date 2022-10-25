@@ -79,6 +79,8 @@ struct PredicateInfo {
    /// Dump SQL
    std::string dumpSQL();
 
+   uint64_t eCost;
+
    /// The delimiter used in our text format
    static const char delimiter='&';
    /// The delimiter used in SQL
