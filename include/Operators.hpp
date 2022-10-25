@@ -15,8 +15,21 @@ namespace std {
   template<> struct hash<SelectInfo> {
     std::size_t operator()(SelectInfo const& s) const noexcept { return s.binding ^ (s.colId << 5); }
   };
+
+  template<> struct less<SelectInfo> {
+    constexpr bool operator()( const SelectInfo& lhs, const SelectInfo& rhs ) const {
+      if (lhs.binding > rhs.binding) {
+        return false;
+      } else if (lhs.binding < rhs.binding) {
+        return true;
+      } else {
+        return lhs.colId < rhs.colId;
+      }
+    }
+  };
 };
 //---------------------------------------------------------------------------
+enum class OperatorType { Scan, FilterScan, Join, SelfJoin, Checksum};
 class Operator {
   /// Operators materialize their entire result
 
@@ -40,8 +53,15 @@ class Operator {
   virtual std::vector<uint64_t*> getResults();
   /// The result size
   uint64_t resultSize=0;
+  /// estimate row count
+  uint64_t eCost;
+
+  std::set<unsigned> bindings;
   /// The destructor
   virtual ~Operator() {};
+
+  virtual std::string getname() = 0;
+  // virtual OperatorType getType() = 0;
 };
 //---------------------------------------------------------------------------
 class Scan : public Operator {
@@ -53,13 +73,18 @@ class Scan : public Operator {
 
   public:
   /// The constructor
-  Scan(Relation& r,unsigned relationBinding) : relation(r), relationBinding(relationBinding) {};
+  Scan(Relation& r,unsigned relationBinding) : relation(r), relationBinding(relationBinding) {
+    this->eCost = r.rowCount;
+    this->bindings.insert(relationBinding);
+  };
   /// Require a column and add it to results
   bool require(SelectInfo info) override;
   /// Run
   void run() override;
   /// Get  materialized results
   virtual std::vector<uint64_t*> getResults() override;
+
+  std::string getname() override { return "Scan"; };
 };
 //---------------------------------------------------------------------------
 class FilterScan : public Scan {
@@ -74,7 +99,18 @@ class FilterScan : public Scan {
 
   public:
   /// The constructor
-  FilterScan(Relation& r,std::vector<FilterInfo> filters) : Scan(r,filters[0].filterColumn.binding), filters(filters)  {};
+  FilterScan(Relation& r,std::vector<FilterInfo> filters) : Scan(r,filters[0].filterColumn.binding), filters(filters)  {
+    if (filters.size() == 1) {
+      this->eCost = filters[0].eCost;
+    } else {
+      double estimate = 1.0;
+      for (size_t i = 1; i < filters.size(); i++) {
+        auto &filter = filters[i];
+        estimate *= static_cast<double>(filter.eCost) / static_cast<double>(filter.rowCount);
+      }
+      this->eCost = static_cast<uint64_t>(filters[0].eCost * estimate);
+    }
+  };
   /// The constructor
   FilterScan(Relation& r,FilterInfo& filterInfo) : FilterScan(r,std::vector<FilterInfo>{filterInfo}) {};
   /// Require a column and add it to results
@@ -83,6 +119,8 @@ class FilterScan : public Scan {
   void run() override;
   /// Get  materialized results
   virtual std::vector<uint64_t*> getResults() override { return Operator::getResults(); }
+
+  std::string getname() override { return "FilterScan"; };
 };
 //---------------------------------------------------------------------------
 class Join : public Operator {
@@ -117,6 +155,8 @@ class Join : public Operator {
   bool require(SelectInfo info) override;
   /// Run
   void run() override;
+
+  std::string getname() override { return "Join"; };
 };
 //---------------------------------------------------------------------------
 class SelfJoin : public Operator {
@@ -141,6 +181,8 @@ class SelfJoin : public Operator {
   bool require(SelectInfo info) override;
   /// Run
   void run() override;
+
+  std::string getname() override { return "SelfJoin"; };
 };
 //---------------------------------------------------------------------------
 class Checksum : public Operator {
@@ -157,5 +199,7 @@ class Checksum : public Operator {
   bool require(SelectInfo info) override { throw; /* check sum is always on the highest level and thus should never request anything */ }
   /// Run
   void run() override;
+
+  std::string getname() override { return "Checksum"; };
 };
 //---------------------------------------------------------------------------

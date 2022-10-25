@@ -9,6 +9,7 @@
 #include <vector>
 #include <chrono>
 #include <thread>
+#include <queue>
 #include <boost/asio/thread_pool.hpp>
 #include <boost/asio/post.hpp>
 #include "Parser.hpp"
@@ -74,6 +75,19 @@ unique_ptr<Operator> Joiner::addScan(set<unsigned>& usedRelations,SelectInfo& in
   return filters.size()?make_unique<FilterScan>(getRelation(info.relId),filters):make_unique<Scan>(getRelation(info.relId),info.binding);
 }
 //---------------------------------------------------------------------------
+uint64_t Joiner::estimateCost(const SelectInfo &info, const QueryInfo& query)
+  // estimate the cost of SelectInfo
+{
+  auto relId = query.relationIds[info.binding];
+  uint64_t cost = getRelation(relId).rowCount;
+  for (auto& f : query.filters) {
+    if (f.filterColumn.binding==info.binding) {
+      cost = std::min(cost, f.eCost);
+    }
+  }
+  return cost;
+}
+//---------------------------------------------------------------------------
 enum QueryGraphProvides {  Left, Right, Both, None };
 //---------------------------------------------------------------------------
 static QueryGraphProvides analyzeInputOfJoin(set<unsigned>& usedRelations,SelectInfo& leftInfo,SelectInfo& rightInfo)
@@ -89,23 +103,10 @@ static QueryGraphProvides analyzeInputOfJoin(set<unsigned>& usedRelations,Select
   return QueryGraphProvides::None;
 }
 //---------------------------------------------------------------------------
-string Joiner::join(QueryInfo& query)
-  // Executes a join query
+unique_ptr<Operator> Joiner::buildPlanTree(QueryInfo& query)
+  // the orignal left-deep join tree
 {
-  log_print("query {}: {}\n", Joiner::query_count++, query.dumpText());
-  milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   set<unsigned> usedRelations;
-
-  // First calculate estimate row count for the Filter
-  for (auto &filter: query.filters) {
-    auto relId = query.relationIds[filter.filterColumn.binding];
-    getRelation(relId).calThenSetEstimateCost(filter);
-    log_print("filter:{}, eCost:{}, rowCount:{}, sorted:{}\n",
-      filter.comparison == FilterInfo::Comparison::Equal ? "=" : filter.comparison == FilterInfo::Comparison::Greater ? ">" : "<",
-      filter.eCost, filter.rowCount, filter.sorted);
-  }
-
-  // Second calculate estimate row count for Prediction
 
   // We always start with the first join predicate and append the other joins to it (--> left-deep join trees)
   // You might want to choose a smarter join ordering ...
@@ -143,6 +144,92 @@ string Joiner::join(QueryInfo& query)
     };
   }
 
+  return root;
+}
+//---------------------------------------------------------------------------
+unique_ptr<Operator> Joiner::buildMyPlanTree(QueryInfo& query)
+  // my left-deep join tree
+{
+  // First calculate estimate row count for the Filter
+  for (auto &filter: query.filters) {
+    auto relId = query.relationIds[filter.filterColumn.binding];
+    getRelation(relId).calThenSetEstimateCost(filter);
+    log_print("filter:{}, eCost:{}, rowCount:{}, sorted:{}\n",
+      filter.comparison == FilterInfo::Comparison::Equal ? "=" : filter.comparison == FilterInfo::Comparison::Greater ? ">" : "<",
+      filter.eCost, filter.rowCount, filter.sorted);
+  }
+
+  // Second for every Predicate(i.e. Join), add the operator to a PQ
+  auto cmp = [](PredicateInfo &left, PredicateInfo &right) { return left.eCost > right.eCost; };
+  std::priority_queue<PredicateInfo, std::vector<PredicateInfo>, decltype(cmp)> pq(cmp);
+  for (auto &pInfo : query.predicates) {
+    pInfo.eCost = std::min(estimateCost(pInfo.left, query), estimateCost(pInfo.right, query));
+    pq.push(pInfo);
+  }
+
+  // construct a queue from priority queue
+  std::vector<PredicateInfo> predicates;
+  while (!pq.empty()) {
+    auto &predicate = pq.top();
+    log_print("eCost:{}\n", predicate.eCost);
+    predicates.emplace_back(std::move(predicate));
+    pq.pop();
+  }
+
+  // swap to avoid Use-After-Free exception
+  std::swap(predicates, query.predicates);
+
+  // following is copied from buildPlanTree
+  set<unsigned> usedRelations;
+
+  auto& firstJoin = query.predicates[0];
+  auto left = addScan(usedRelations, firstJoin.left, query);
+  auto right = addScan(usedRelations, firstJoin.right, query);
+  unique_ptr<Operator> root=make_unique<Join>(move(left), move(right), firstJoin);
+
+  for (unsigned i = 1; i < query.predicates.size(); ++i) {
+    auto& pInfo = query.predicates[i];
+    auto& leftInfo = pInfo.left;
+    auto& rightInfo = pInfo.right;
+    unique_ptr<Operator> left, right;
+    switch (analyzeInputOfJoin(usedRelations, leftInfo, rightInfo)) {
+      case QueryGraphProvides::Left:
+        left = move(root);
+        right = addScan(usedRelations, rightInfo, query);
+        root = make_unique<Join>(move(left), move(right), pInfo);
+        break;
+      case QueryGraphProvides::Right:
+        left = addScan(usedRelations, leftInfo, query);
+        right = move(root);
+        root = make_unique<Join>(move(left), move(right), pInfo);
+        break;
+      case QueryGraphProvides::Both:
+        // All relations of this join are already used somewhere else in the query.
+        // Thus, we have either a cycle in our join graph or more than one join predicate per join.
+        root = make_unique<SelfJoin>(move(root),pInfo);
+        break;
+      case QueryGraphProvides::None:
+        // Process this predicate later when we can connect it to the other joins
+        // We never have cross products
+        query.predicates.push_back(pInfo);
+        break;
+    };
+  }
+
+  return root;
+}
+//---------------------------------------------------------------------------
+string Joiner::join(QueryInfo& query)
+  // Executes a join query
+{
+  log_print("query {}: {}\n", Joiner::query_count++, query.dumpSQL());
+  milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+
+  // The original left-deep tree
+  // unique_ptr<Operator> root = buildPlanTree(query);
+  // My left-deep tree, seems not necessary to build a bushy tree?
+  unique_ptr<Operator> root = buildMyPlanTree(query);
+  
   Checksum checkSum(move(root),query.selections);
   checkSum.run();
 
