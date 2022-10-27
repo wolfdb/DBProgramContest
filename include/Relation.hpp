@@ -57,7 +57,8 @@ class Relation {
   std::vector<uint64_t> mins;
   std::vector<int64_t> distinct_count;
   // value -> index map
-  std::vector<oneapi::tbb::concurrent_unordered_multimap<uint64_t, int>> columnHmap;
+  // std::vector<std::unordered_multimap<uint64_t, uint64_t>> columnHmap;
+  std::vector<oneapi::tbb::concurrent_unordered_multimap<uint64_t, uint64_t>> columnHmap;
   std::vector<bool> hasHmapBuilt;
 
   /// Real Histogram
@@ -75,6 +76,8 @@ class Relation {
   void buildHistogram(int idx);
   /// print histogram of column i
   void printHistogram(int idx);
+  /// build concurrent hash map for column i, with range [start, end)
+  void buildConcurrentHashMap(int idx, uint64_t start, uint64_t end);
 
   /// Calculate the estimate cost
   void calThenSetEstimateCost(FilterInfo &filter);

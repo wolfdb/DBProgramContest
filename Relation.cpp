@@ -218,6 +218,18 @@ void Relation::printHistogram(int idx)
   }
 }
 //---------------------------------------------------------------------------
+void Relation::buildConcurrentHashMap(int idx, uint64_t start, uint64_t end)
+  // build concurrent hash map for column i, with range [start, end)
+{
+  assert(idx < columns.size());
+  auto &hashmap = this->columnHmap[idx];
+  uint64_t *column = this->columns[idx];
+  // unrolling later to see the performance gain
+  for (uint64_t i = start; i < end; i++) {
+    hashmap.insert(std::make_pair(column[i], i));
+  }
+}
+//---------------------------------------------------------------------------
 void Relation::calThenSetEstimateCost(FilterInfo &filter)
   // Calculate the estimate cost
 {

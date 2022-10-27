@@ -17,11 +17,20 @@ int main(int argc, char* argv[]) {
    //
    joiner.buildHistogram();
 
-   QueryInfo i;
+   vector<QueryInfo> qq;
    while (getline(cin, line)) {
-      if (line == "F") continue; // End of a batch
-      i.parseQuery(line);
-      cout << joiner.join(i);
+      if (line == "F") { // End of a batch
+         // build concurrent_unorder_multimap for unsorted columns that with '=' comparator
+         joiner.buildIndex(qq);
+         for (auto &i : qq) {
+            cout << joiner.join(i);
+         }
+         qq.clear();
+      } else {
+         QueryInfo i;
+         i.parseQuery(line);
+         qq.push_back(i);
+      }
    }
    return 0;
 }
