@@ -2,6 +2,7 @@
 #include <cassert>
 #include <iostream>
 #include <queue>
+#include <algorithm>
 #include "Log.hpp"
 //---------------------------------------------------------------------------
 using namespace std;
@@ -46,6 +47,10 @@ bool FilterScan::require(SelectInfo info)
   return true;
 }
 //---------------------------------------------------------------------------
+bool FilterScan::isRangeResult() {
+  return isRange;
+}
+//---------------------------------------------------------------------------
 void FilterScan::copy2Result(uint64_t id)
   // Copy to result
 {
@@ -75,33 +80,262 @@ void FilterScan::run()
 {
   // do the apply for each filter
   std::sort(filters.begin(), filters.end(), [](const FilterInfo &left, const FilterInfo &right) { return left.eCost < right.eCost; });
-  vector<uint64_t> idxvec;
+  vector<uint64_t> index{0, relation.rowCount};
   vector<uint64_t> tmp;
-  idxvec.reserve(relation.rowCount);
-  tmp.reserve(relation.rowCount);
-  bool first = true;
+  bool isRange = true;
+  bool nomatch = false;
   for (auto &f : filters) {
-    if (first) {
-      for (uint64_t i=0;i<relation.rowCount;++i) {
-        if (applyFilter(i,f)) {
-          idxvec.push_back(i);
+    if (nomatch) {
+      break;
+    }
+    auto &fc = f.filterColumn;
+    uint64_t *column = relation.columns[fc.colId];
+    if (isRange && relation.sorts[fc.colId] == Relation::Sorted::Likely) {
+      // use binary search for sorted column
+      uint64_t *left = column + index[0];
+      uint64_t *right = column + index[1];
+      uint64_t distance = right - left;
+      switch (f.comparison)
+      {
+      case FilterInfo::Comparison::Equal:
+      {
+        if (relation.orders[fc.colId] == Relation::Order::ASC) {
+          auto lower = std::lower_bound(left, right, f.constant) - left;
+          if (lower == distance) {
+            nomatch = true;
+            isRange = false;
+            index.clear();
+          } else {
+            auto index0 = index[0];
+            index[0] = index0 + lower;
+            auto upper = std::upper_bound(left, right, f.constant) - left;
+            if (upper == distance) {
+              index[1] = index[0] + 1;
+            } else {
+              index[1] = index0 + upper;
+            }
+          }
+        } else {
+          auto lower = std::lower_bound(left, right, f.constant, std::greater<uint64_t>()) -  left;
+          if (lower == distance) {
+            nomatch = true;
+            isRange = false;
+            index.clear();
+          } else {
+            auto index0 = index[0];
+            index[0] = index[0] + lower;
+            auto upper = std::upper_bound(left, right, f.constant, std::greater<uint64_t>()) - left;
+            if (upper == distance) {
+              index[1] = index[0] + 1;
+            } else {
+              index[1] = index0 + upper;
+            }
+          }
         }
+        break;
       }
-      first = false;
+      case FilterInfo::Comparison::Greater:
+      {
+        if (relation.orders[fc.colId] == Relation::Order::ASC) {
+          auto upper = std::upper_bound(left, right, f.constant) - left;
+          if (upper == distance) {
+            nomatch = true;
+            isRange = false;
+            index.clear();
+          } else {
+            index[0] = index[0] + upper;
+          }
+        } else {
+          auto lower = std::lower_bound(left, right, f.constant, std::greater<uint64_t>()) - left;
+          if (lower == distance) {
+            nomatch = true;
+            isRange = false;
+            index.clear();
+          } else {
+            index[1] = index[0] + lower;
+          }
+        }
+        break;
+      }
+      case FilterInfo::Comparison::Less:
+      {
+        if (relation.orders[fc.colId] == Relation::Order::ASC) {
+          auto lower = std::lower_bound(left, right, f.constant) - left;
+          if (lower == distance) {
+            nomatch = true;
+            isRange = false;
+            index.clear();
+          } else {
+            index[1] = index[0] + lower;
+          }
+        } else {
+          auto upper = std::upper_bound(left, right, f.constant, std::greater<uint64_t>()) - left;
+          if (upper == distance) {
+            nomatch = true;
+            isRange = false;
+            index.clear();
+          } else {
+            index[0] = index[0] + upper;
+          }
+        }
+        break;
+      }
+      default:
+        assert(false);
+      }
     } else {
-      for (auto i : idxvec) {
-        if (applyFilter(i,f)) {
-          tmp.push_back(i);
+      switch (f.comparison)
+      {
+      case FilterInfo::Comparison::Equal:
+      {
+        if (isRange) {
+          assert(index.size() == 2);
+          tmp.reserve(index[1] - index[0]);
+          // we can use simd intrinsic for the following range
+          for (int64_t i = index[0]; i < index[1]; i++) {
+            if (column[i] == f.constant) {
+              tmp.push_back(i);
+            }
+          }
+          isRange = false;
+          index.swap(tmp);
+          tmp.clear();
+          if (index.size() == 0) {
+            nomatch = true;
+          }
+        } else {
+          tmp.reserve(index.size());
+          // can not use simd here
+          for (auto ii : index) {
+            if (column[ii] == f.constant) {
+              tmp.push_back(ii);
+            }
+          }
+          index.swap(tmp);
+          tmp.clear();
+          if (index.size() == 0) {
+            nomatch = true;
+          }
         }
+        break;
       }
-      std::swap(idxvec, tmp);
-      tmp.clear();
+      case FilterInfo::Comparison::Greater:
+      {
+        if (isRange) {
+          assert(index.size() == 2);
+          tmp.reserve(index[1] - index[0]);
+          // we can use simd intrinsic for the following range
+          for (int64_t i = index[0]; i < index[1]; i++) {
+            if (column[i] > f.constant) {
+              tmp.push_back(i);
+            }
+          }
+          isRange = false;
+          index.swap(tmp);
+          tmp.clear();
+          if (index.size() == 0) {
+            nomatch = true;
+          }
+        } else {
+          tmp.reserve(index.size());
+          // can not use simd here
+          for (auto ii : index) {
+            if (column[ii] > f.constant) {
+              tmp.push_back(ii);
+            }
+          }
+          index.swap(tmp);
+          tmp.clear();
+          if (index.size() == 0) {
+            nomatch = true;
+          }
+        }
+        break;
+      }
+      case FilterInfo::Comparison::Less:
+      {
+        if (isRange) {
+          assert(index.size() == 2);
+          tmp.reserve(index[1] - index[0]);
+          // we can use simd intrinsic for the following range
+          for (int64_t i = index[0]; i < index[1]; i++) {
+            if (column[i] < f.constant) {
+              tmp.push_back(i);
+            }
+          }
+          isRange = false;
+          index.swap(tmp);
+          tmp.clear();
+          if (index.size() == 0) {
+            nomatch = true;
+          }
+        } else {
+          tmp.reserve(index.size());
+          // can not use simd here
+          for (auto ii : index) {
+            if (column[ii] < f.constant) {
+              tmp.push_back(ii);
+            }
+          }
+          index.swap(tmp);
+          tmp.clear();
+          if (index.size() == 0) {
+            nomatch = true;
+          }
+        }
+        break;
+      }
+      default:
+        assert(false);
+      }
     }
   }
 
-  for (auto i : idxvec) {
-    copy2Result(i);
+  this->isRange = isRange;
+  // out.print("index : {}\n", fmt::join(index, ", "));
+  // copy the data for test now
+  if (isRange) {
+    for (uint64_t i = index[0]; i < index[1]; i++) {
+      copy2Result(i);
+    }
+  } else {
+    for (auto i : index) {
+      copy2Result(i);
+    }
   }
+  this->resultSize = isRange ? index[1] - index[0] : index.size();
+  this->index.swap(index);
+
+
+  // vector<uint64_t> idxvec;
+  // vector<uint64_t> tmp2;
+  // idxvec.reserve(relation.rowCount);
+  // tmp2.reserve(relation.rowCount);
+  // bool first = true;
+  // for (auto &f : filters) {
+  //   if (first) {
+  //     for (uint64_t i=0;i<relation.rowCount;++i) {
+  //       if (applyFilter(i,f)) {
+  //         idxvec.push_back(i);
+  //       }
+  //     }
+  //     first = false;
+  //   } else {
+  //     for (auto i : idxvec) {
+  //       if (applyFilter(i,f)) {
+  //         tmp2.push_back(i);
+  //       }
+  //     }
+  //     std::swap(idxvec, tmp2);
+  //     tmp2.clear();
+  //   }
+  // }
+
+  // out.print("index2 : {}\n", fmt::join(idxvec, ", "));
+
+  // for (auto i : idxvec) {
+  //   copy2Result(i);
+  // }
 
   // copy the result
   // for (uint64_t i=0;i<relation.rowCount;++i) {

@@ -56,12 +56,12 @@ class Operator {
   /// estimate row count
   uint64_t eCost;
 
+  /// Is the result from this operator are a range
+  virtual bool isRangeResult() = 0;
+
   std::set<unsigned> bindings;
   /// The destructor
   virtual ~Operator() {};
-
-  virtual std::string getname() = 0;
-  // virtual OperatorType getType() = 0;
 };
 //---------------------------------------------------------------------------
 class Scan : public Operator {
@@ -84,7 +84,8 @@ class Scan : public Operator {
   /// Get  materialized results
   virtual std::vector<uint64_t*> getResults() override;
 
-  std::string getname() override { return "Scan"; };
+  /// Is the result from this operator are a range
+  bool isRangeResult() override { return true; };
 };
 //---------------------------------------------------------------------------
 class FilterScan : public Scan {
@@ -92,6 +93,10 @@ class FilterScan : public Scan {
   std::vector<FilterInfo> filters;
   /// The input data
   std::vector<uint64_t*> inputData;
+  /// The result index
+  std::vector<uint64_t> index;
+  /// Is the index a range
+  bool isRange;
   /// Apply filter
   bool applyFilter(uint64_t id,FilterInfo& f);
   /// Copy tuple to result
@@ -120,7 +125,7 @@ class FilterScan : public Scan {
   /// Get  materialized results
   virtual std::vector<uint64_t*> getResults() override { return Operator::getResults(); }
 
-  std::string getname() override { return "FilterScan"; };
+  bool isRangeResult() override;
 };
 //---------------------------------------------------------------------------
 class Join : public Operator {
@@ -156,7 +161,7 @@ class Join : public Operator {
   /// Run
   void run() override;
 
-  std::string getname() override { return "Join"; };
+  bool isRangeResult() override { return false; }
 };
 //---------------------------------------------------------------------------
 class SelfJoin : public Operator {
@@ -182,7 +187,7 @@ class SelfJoin : public Operator {
   /// Run
   void run() override;
 
-  std::string getname() override { return "SelfJoin"; };
+  bool isRangeResult() override { return false; }
 };
 //---------------------------------------------------------------------------
 class Checksum : public Operator {
@@ -200,6 +205,6 @@ class Checksum : public Operator {
   /// Run
   void run() override;
 
-  std::string getname() override { return "Checksum"; };
+  bool isRangeResult() override { return false; }
 };
 //---------------------------------------------------------------------------
