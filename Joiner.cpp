@@ -55,7 +55,6 @@ void Joiner::buildHistogram()
 void Joiner::buildIndex(const std::vector<QueryInfo> &qq)
   // concurrently build indexs for Equal filter
 {
-  std::unordered_set<SelectInfo> usedInfo;
   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   boost::asio::thread_pool pool(std::thread::hardware_concurrency());
   for (auto &qi: qq) {
@@ -63,14 +62,12 @@ void Joiner::buildIndex(const std::vector<QueryInfo> &qq)
       if (filter.comparison == FilterInfo::Comparison::Equal) {
         auto &filterColumn = filter.filterColumn;
         auto &relation = getRelation(filterColumn.relId);
-        if (usedInfo.count(filterColumn) ||
-            relation.sorts[filterColumn.colId] == Relation::Sorted::Likely ||   // do not build hash map for sorted column
+        if (relation.sorts[filterColumn.colId] == Relation::Sorted::Likely ||   // do not build hash map for sorted column
             relation.hasHmapBuilt[filterColumn.colId] == true) {
           continue;
         }
         // call reserve to avoid rehashing
         relation.columnHmap[filterColumn.colId].reserve(relation.rowCount);
-        usedInfo.insert(filterColumn);
         uint64_t step = std::max(MIN_SCAN_ITEM_COUNT, relation.rowCount / std::thread::hardware_concurrency());
         uint64_t start = 0;
         for (; start + step < relation.rowCount; start += step) {
