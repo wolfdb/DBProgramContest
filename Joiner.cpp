@@ -52,6 +52,47 @@ void Joiner::buildHistogram()
   }
 }
 //---------------------------------------------------------------------------
+void Joiner::buildIndex(const std::vector<QueryInfo> &qq)
+  // concurrently build indexs for Equal filter
+{
+  std::unordered_set<SelectInfo> usedInfo;
+  milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+  boost::asio::thread_pool pool(std::thread::hardware_concurrency());
+  for (auto &qi: qq) {
+    for (auto &filter: qi.filters) {
+      if (filter.comparison == FilterInfo::Comparison::Equal) {
+        auto &filterColumn = filter.filterColumn;
+        auto &relation = getRelation(filterColumn.relId);
+        if (usedInfo.count(filterColumn) ||
+            relation.sorts[filterColumn.colId] == Relation::Sorted::Likely ||   // do not build hash map for sorted column
+            relation.hasHmapBuilt[filterColumn.colId] == true) {
+          continue;
+        }
+        // call reserve to avoid rehashing
+        relation.columnHmap[filterColumn.colId].reserve(relation.rowCount);
+        usedInfo.insert(filterColumn);
+        uint64_t step = std::max(MIN_SCAN_ITEM_COUNT, relation.rowCount / std::thread::hardware_concurrency());
+        uint64_t start = 0;
+        for (; start + step < relation.rowCount; start += step) {
+          boost::asio::post(pool, [&relation, colId = filterColumn.colId, start, end = start + step]() {
+            relation.buildConcurrentHashMap(colId, start, end);
+          });
+          out.print("build map for relation {}, column {}, range [{}, {})\n", filterColumn.relId, filterColumn.colId, start, start + step);
+        }
+        boost::asio::post(pool, [&relation, colId = filterColumn.colId, start, end = relation.rowCount]() {
+          relation.buildConcurrentHashMap(colId, start, end);
+        });
+        out.print("build map for relation {}, column {}, range [{}, {})\n", filterColumn.relId, filterColumn.colId, start, relation.rowCount);
+        relation.hasHmapBuilt[filterColumn.colId] = true;
+        // out.print("hash bucket count: {} load factor {}\n", relation.columnHmap[filterColumn.colId].unsafe_bucket_count(), relation.columnHmap[filterColumn.colId].load_factor());
+      }
+    }
+  }
+  pool.join();
+  milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+  out.print("build index run time: {} ms\n\n", end.count() - start.count());
+}
+//---------------------------------------------------------------------------
 Relation& Joiner::getRelation(unsigned relationId)
 // Loads a relation from disk
 {
@@ -152,7 +193,7 @@ unique_ptr<Operator> Joiner::buildMyPlanTree(QueryInfo& query)
 {
   // First calculate estimate row count for the Filter
   for (auto &filter: query.filters) {
-    auto relId = query.relationIds[filter.filterColumn.binding];
+    auto relId = filter.filterColumn.relId;
     getRelation(relId).calThenSetEstimateCost(filter);
     out.print("filter:{}, eCost:{}, rowCount:{}, sorted:{}\n",
       filter.comparison == FilterInfo::Comparison::Equal ? "=" : filter.comparison == FilterInfo::Comparison::Greater ? ">" : "<",

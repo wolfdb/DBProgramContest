@@ -1,6 +1,8 @@
 #include <Operators.hpp>
 #include <cassert>
 #include <iostream>
+#include <queue>
+#include "Log.hpp"
 //---------------------------------------------------------------------------
 using namespace std;
 //---------------------------------------------------------------------------
@@ -71,14 +73,45 @@ bool FilterScan::applyFilter(uint64_t i,FilterInfo& f)
 void FilterScan::run()
   // Run
 {
-  for (uint64_t i=0;i<relation.rowCount;++i) {
-    bool pass=true;
-    for (auto& f : filters) {
-      pass&=applyFilter(i,f);
+  // do the apply for each filter
+  std::sort(filters.begin(), filters.end(), [](const FilterInfo &left, const FilterInfo &right) { return left.eCost < right.eCost; });
+  vector<uint64_t> idxvec;
+  vector<uint64_t> tmp;
+  idxvec.reserve(relation.rowCount);
+  tmp.reserve(relation.rowCount);
+  bool first = true;
+  for (auto &f : filters) {
+    if (first) {
+      for (uint64_t i=0;i<relation.rowCount;++i) {
+        if (applyFilter(i,f)) {
+          idxvec.push_back(i);
+        }
+      }
+      first = false;
+    } else {
+      for (auto i : idxvec) {
+        if (applyFilter(i,f)) {
+          tmp.push_back(i);
+        }
+      }
+      std::swap(idxvec, tmp);
+      tmp.clear();
     }
-    if (pass)
-      copy2Result(i);
   }
+
+  for (auto i : idxvec) {
+    copy2Result(i);
+  }
+
+  // copy the result
+  // for (uint64_t i=0;i<relation.rowCount;++i) {
+  //   bool pass=true;
+  //   for (auto& f : filters) {
+  //     pass&=applyFilter(i,f);
+  //   }
+  //   if (pass)
+  //     copy2Result(i);
+  // }
 }
 //---------------------------------------------------------------------------
 vector<uint64_t*> Operator::getResults()

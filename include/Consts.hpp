@@ -14,6 +14,11 @@
 // sample max 1MB for each column
 #define MAX_SAMPLE_SIZE 1048576UL
 
+// minimal scan size 4MB
+#define MIN_SCAN_SIZE 4194304UL
+
 #define MAX_SAMPLE_ITEM_COUNT (MAX_SAMPLE_SIZE >> 3)
+
+#define MIN_SCAN_ITEM_COUNT (MIN_SCAN_SIZE >> 3)
 
 #define HISTOGRAM_BUCKET_CNT 32

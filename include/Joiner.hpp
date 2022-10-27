@@ -20,8 +20,10 @@ class Joiner {
   Relation& getRelation(unsigned id);
   /// Joins a given set of relations
   std::string join(QueryInfo& i);
-  /// Build histograms and indexs
+  /// Build histograms
   void buildHistogram();
+  /// Build indexs
+  void buildIndex(const std::vector<QueryInfo> &qq);
 
   /// estimate the cost of SelectInfo
   uint64_t estimateCost(const SelectInfo &info, const QueryInfo& query);
