@@ -7,59 +7,15 @@
 //---------------------------------------------------------------------------
 using namespace std;
 //---------------------------------------------------------------------------
-bool Scan::require(SelectInfo info)
-  // Require a column and add it to results
-{
-  if (info.binding!=relationBinding)
-    return false;
-  assert(info.colId<relation.columns.size());
-  resultColumns.push_back(relation.columns[info.colId]);
-  select2ResultColId[info]=resultColumns.size()-1;
-  return true;
-}
-//---------------------------------------------------------------------------
 void Scan::run()
   // Run
 {
-  // Nothing to do
   resultSize=relation.rowCount;
+  intermediateResults.push_back({0, relation.rowCount});
+  log_print("scan resultSize: {}\n", resultSize);
 }
 //---------------------------------------------------------------------------
-vector<uint64_t*> Scan::getResults()
-  // Get materialized results
-{
-  return resultColumns;
-}
-//---------------------------------------------------------------------------
-bool FilterScan::require(SelectInfo info)
-  // Require a column and add it to results
-{
-  if (info.binding!=relationBinding)
-    return false;
-  assert(info.colId<relation.columns.size());
-  if (select2ResultColId.find(info)==select2ResultColId.end()) {
-    // Add to results
-    inputData.push_back(relation.columns[info.colId]);
-    tmpResults.emplace_back();
-    unsigned colId=tmpResults.size()-1;
-    select2ResultColId[info]=colId;
-  }
-  return true;
-}
-//---------------------------------------------------------------------------
-bool FilterScan::isRangeResult() {
-  return isRange;
-}
-//---------------------------------------------------------------------------
-void FilterScan::copy2Result(uint64_t id)
-  // Copy to result
-{
-  for (unsigned cId=0;cId<inputData.size();++cId)
-    tmpResults[cId].push_back(inputData[cId][id]);
-  ++resultSize;
-}
-//---------------------------------------------------------------------------
-bool FilterScan::applyFilter(uint64_t i,FilterInfo& f)
+bool FilterScan::applyFilter(uint64_t i, const FilterInfo& f)
   // Apply filter
 {
   auto compareCol=relation.columns[f.filterColumn.colId];
@@ -292,20 +248,20 @@ void FilterScan::run()
   }
 
   this->isRange = isRange;
-  // out.print("index : {}\n", fmt::join(index, ", "));
+  // log_print("index : {}\n", fmt::join(index, ", "));
   // copy the data for test now
-  if (isRange) {
-    for (uint64_t i = index[0]; i < index[1]; i++) {
-      copy2Result(i);
-    }
-  } else {
-    for (auto i : index) {
-      copy2Result(i);
-    }
-  }
+  // if (isRange) {
+  //   for (uint64_t i = index[0]; i < index[1]; i++) {
+  //     copy2Result(i);
+  //   }
+  // } else {
+  //   for (auto i : index) {
+  //     copy2Result(i);
+  //   }
+  // }
   this->resultSize = isRange ? index[1] - index[0] : index.size();
-  this->index.swap(index);
-
+  this->intermediateResults.emplace_back(std::move(index));
+  log_print("filter scan resultSize: {}, isRange :{}\n", resultSize, isRange);
 
   // vector<uint64_t> idxvec;
   // vector<uint64_t> tmp2;
@@ -331,7 +287,7 @@ void FilterScan::run()
   //   }
   // }
 
-  // out.print("index2 : {}\n", fmt::join(idxvec, ", "));
+  // log_print("index2 : {}\n", fmt::join(idxvec, ", "));
 
   // for (auto i : idxvec) {
   //   copy2Result(i);
@@ -348,162 +304,229 @@ void FilterScan::run()
   // }
 }
 //---------------------------------------------------------------------------
-vector<uint64_t*> Operator::getResults()
-  // Get materialized results
+void Join::copy2ResultLR(uint64_t leftId, uint64_t rightId)
 {
-  vector<uint64_t*> resultVector;
-  for (auto& c : tmpResults) {
-    resultVector.push_back(c.data());
-  }
-  return resultVector;
+  assert(intermediateResults.size() == 2);
+  intermediateResults[0].push_back(leftId);
+  intermediateResults[1].push_back(rightId);
+  ++ resultSize;
 }
-//---------------------------------------------------------------------------
-bool Join::require(SelectInfo info)
-  // Require a column and add it to results
+void Join::copy2ResultL(uint64_t leftId, uint64_t rightId)
 {
-  if (requestedColumns.count(info)==0) {
-    bool success=false;
-    if(left->require(info)) {
-      requestedColumnsLeft.emplace_back(info);
-      success=true;
-    } else if (right->require(info)) {
-      success=true;
-      requestedColumnsRight.emplace_back(info);
-    }
-    if (!success)
-      return false;
-
-    tmpResults.emplace_back();
-    requestedColumns.emplace(info);
+  auto &rightResults = right->getResults();
+  intermediateResults[0].push_back(leftId);
+  unsigned index = 1;
+  for (unsigned cId = 0; cId < rightResults.size(); ++cId) {
+    intermediateResults[index++].push_back(rightResults[cId][rightId]);
   }
-  return true;
+  ++ resultSize;
 }
-//---------------------------------------------------------------------------
-void Join::copy2Result(uint64_t leftId,uint64_t rightId)
+void Join::copy2ResultR(uint64_t leftId, uint64_t rightId)
+{
+  auto &leftResults = left->getResults();
+  unsigned index = 0;
+  for (unsigned cId = 0; cId < leftResults.size(); ++cId) {
+    intermediateResults[index++].push_back(leftResults[cId][leftId]);
+  }
+  intermediateResults[index].push_back(rightId);
+  ++ resultSize;
+}
+void Join::copy2Result(uint64_t leftId, uint64_t rightId)
   // Copy to result
 {
-  unsigned relColId=0;
-  for (unsigned cId=0;cId<copyLeftData.size();++cId)
-    tmpResults[relColId++].push_back(copyLeftData[cId][leftId]);
+  auto &leftResults = left->getResults();
+  auto &rightResults = right->getResults();
+  unsigned index=0;
 
-  for (unsigned cId=0;cId<copyRightData.size();++cId)
-    tmpResults[relColId++].push_back(copyRightData[cId][rightId]);
+  for (unsigned cId = 0; cId < leftResults.size(); ++cId) {
+    intermediateResults[index++].push_back(leftResults[cId][leftId]);
+  }
+
+  for (unsigned cId = 0; cId < rightResults.size(); ++cId) {
+    intermediateResults[index++].push_back(rightResults[cId][rightId]);
+  }
   ++resultSize;
 }
 //---------------------------------------------------------------------------
 void Join::run()
   // Run
 {
-  left->require(pInfo.left);
-  right->require(pInfo.right);
   left->run();
   right->run();
-
 
   // Use smaller input for build
   if (left->resultSize>right->resultSize) {
     swap(left,right);
     swap(pInfo.left,pInfo.right);
-    swap(requestedColumnsLeft,requestedColumnsRight);
   }
 
-  auto leftInputData=left->getResults();
-  auto rightInputData=right->getResults();
+  auto &leftResults = left->getResults();
+  auto &rightResults = right->getResults();
+  auto &leftBindings = left->getBindings();
+  auto &rightBindings = right->getBindings();
 
-  // Resolve the input columns
-  unsigned resColId=0;
-  for (auto& info : requestedColumnsLeft) {
-    copyLeftData.push_back(leftInputData[left->resolve(info)]);
-    select2ResultColId[info]=resColId++;
+  // Resolve the input column
+  unsigned resColId = 0;
+  intermediateResults.resize(leftResults.size() + rightResults.size());
+  bindingOfIntermediateResults.resize(leftBindings.size() + rightBindings.size());
+  assert(leftResults.size() + rightResults.size() == leftBindings.size() + rightBindings.size());
+  for (auto binding : leftBindings) {
+    bindingOfIntermediateResults[resColId++] = binding;
+    assert(binding2Relations.find(binding) == binding2Relations.end());
+    binding2Relations[binding] = left->getRelation(binding);
   }
-  for (auto& info : requestedColumnsRight) {
-    copyRightData.push_back(rightInputData[right->resolve(info)]);
-    select2ResultColId[info]=resColId++;
+  for (auto binding : rightBindings) {
+    bindingOfIntermediateResults[resColId++] = binding;
+    assert(binding2Relations.find(binding) == binding2Relations.end());
+    binding2Relations[binding] = right->getRelation(binding);
   }
 
-  auto leftColId=left->resolve(pInfo.left);
-  auto rightColId=right->resolve(pInfo.right);
+  auto leftColId = left->resolve(pInfo.left);
+  auto leftBinding = leftBindings[leftColId];
+  auto rightColId = right->resolve(pInfo.right);
+  auto rightBinding = rightBindings[rightColId];
+  uint64_t *leftColumn = left->getRelation(leftBinding)->columns[pInfo.left.colId];
+  uint64_t *rightColumn = right->getRelation(rightBinding)->columns[pInfo.right.colId];
 
-  // Build phase
-  auto leftKeyColumn=leftInputData[leftColId];
-  hashTable.reserve(left->resultSize*2);
-  for (uint64_t i=0,limit=i+left->resultSize;i!=limit;++i) {
-    hashTable.emplace(leftKeyColumn[i],i);
-  }
-  // Probe phase
-  auto rightKeyColumn=rightInputData[rightColId];
-  for (uint64_t i=0,limit=i+right->resultSize;i!=limit;++i) {
-    auto rightKey=rightKeyColumn[i];
-    auto range=hashTable.equal_range(rightKey);
-    for (auto iter=range.first;iter!=range.second;++iter) {
-      copy2Result(iter->second,i);
+  // log_print("left column addr {}, right column addr {}\n", fmt::ptr(leftColumn), fmt::ptr(rightColumn));
+
+  hashTable.reserve(left->resultSize * 2);
+  if (left->isRangeResult()) {
+    // Build phase
+    assert(leftResults.size() == 1);
+    log_print("leftColId: {} leftBinding: {}, rightColId: {}, rightBinding: {}\n", leftColId, leftBinding, rightColId, rightBinding);
+    auto &leftResult = leftResults[0];
+    log_print("range [{}, {})\n", leftResult[0], leftResult[1]);
+    for (uint64_t i = leftResult[0]; i < leftResult[1]; i++) {
+      // simd ?
+      // if (leftBinding == 2) {
+      //   log_print(" emplace {}, {}\n", leftColumn[i], i);
+      // }
+      // log_print(" emplace {}, {}\n", leftColumn[i], i);
+      hashTable.emplace(leftColumn[i], i);
+    }
+    // Probe phase
+    if (right->isRangeResult()) {
+      assert(rightResults.size() == 1);
+      auto &rightResult = rightResults[0];
+      for (uint64_t i = rightResult[0]; i < rightResult[1]; i++) {
+        auto rightKey = rightColumn[i];
+        auto range = hashTable.equal_range(rightKey);
+        for (auto iter = range.first; iter != range.second; ++iter) {
+          copy2ResultLR(iter->second, i);
+        }
+      }
+    } else {
+      auto rightResult = rightResults[rightColId];
+      log_print("right result size: {}\n", rightResult.size());
+      for (uint64_t i = 0; i < rightResult.size(); i++) {
+        auto rightKey = rightColumn[rightResult[i]];
+        // log_print("  rightKey: {}\n", rightKey);
+        auto range = hashTable.equal_range(rightKey);
+        for (auto iter = range.first; iter != range.second; ++iter) {
+          // log_print("  hash key {}, copy {}, {}\n", iter->first, iter->second, i);
+          copy2ResultL(iter->second, i);
+        }
+      }
+    }
+  } else {
+    // Build phase
+    auto leftResult = leftResults[leftColId];
+    for (uint64_t i = 0; i < leftResult.size(); i++) {
+      // multi threads
+      hashTable.emplace(leftColumn[leftResult[i]], i);
+    }
+    // Probe phase
+    if (right->isRangeResult()) {
+      assert(rightResults.size() == 1);
+      auto &rightResult = rightResults[0];
+      for (uint64_t i = rightResult[0]; i < rightResult[1]; i++) {
+        auto rightKey = rightColumn[i];
+        auto range = hashTable.equal_range(rightKey);
+        for (auto iter = range.first; iter != range.second; ++iter) {
+          copy2ResultR(iter->second, i);
+        }
+      }
+    } else {
+      auto &rightResult = rightResults[rightColId];
+      for (uint64_t i = 0; i < rightResult.size(); i++) {
+        auto rightKey = rightColumn[rightResult[i]];
+        auto range = hashTable.equal_range(rightKey);
+        for (auto iter = range.first; iter != range.second; ++iter) {
+          copy2Result(iter->second, i);
+        }
+      }
     }
   }
+  log_print("join resultSize: {}\n", resultSize);
 }
 //---------------------------------------------------------------------------
 void SelfJoin::copy2Result(uint64_t id)
   // Copy to result
 {
-  for (unsigned cId=0;cId<copyData.size();++cId)
-    tmpResults[cId].push_back(copyData[cId][id]);
+  auto &inputResults = input->getResults();
+  for (unsigned cId = 0; cId < inputResults.size(); ++cId)
+    intermediateResults[cId].push_back(inputResults[cId][id]);
   ++resultSize;
-}
-//---------------------------------------------------------------------------
-bool SelfJoin::require(SelectInfo info)
-  // Require a column and add it to results
-{
-  if (requiredIUs.count(info))
-    return true;
-  if(input->require(info)) {
-    tmpResults.emplace_back();
-    requiredIUs.emplace(info);
-    return true;
-  }
-  return false;
 }
 //---------------------------------------------------------------------------
 void SelfJoin::run()
   // Run
 {
-  input->require(pInfo.left);
-  input->require(pInfo.right);
   input->run();
-  inputData=input->getResults();
-
-  for (auto& iu : requiredIUs) {
-    auto id=input->resolve(iu);
-    copyData.emplace_back(inputData[id]);
-    select2ResultColId.emplace(iu,copyData.size()-1);
-  }
+  auto &inputResults = input->getResults();
+  intermediateResults.resize(inputResults.size());
 
   auto leftColId=input->resolve(pInfo.left);
   auto rightColId=input->resolve(pInfo.right);
 
-  auto leftCol=inputData[leftColId];
-  auto rightCol=inputData[rightColId];
-  for (uint64_t i=0;i<input->resultSize;++i) {
-    if (leftCol[i]==rightCol[i])
+  uint64_t *leftColumn = input->getRelation(pInfo.left.binding)->columns[pInfo.left.colId];
+  uint64_t *rightColumn = input->getRelation(pInfo.right.binding)->columns[pInfo.right.colId];
+
+  auto leftCol=inputResults[leftColId];
+  auto rightCol=inputResults[rightColId];
+  for (uint64_t i = 0; i < input->resultSize; ++i) {
+    if (leftColumn[leftCol[i]] == rightColumn[rightCol[i]])
       copy2Result(i);
   }
+  log_print("self join resultSize: {}\n", resultSize);
 }
 //---------------------------------------------------------------------------
 void Checksum::run()
   // Run
 {
-  for (auto& sInfo : colInfo) {
-    input->require(sInfo);
-  }
   input->run();
-  auto results=input->getResults();
 
-  for (auto& sInfo : colInfo) {
-    auto colId=input->resolve(sInfo);
-    auto resultCol=results[colId];
-    uint64_t sum=0;
-    resultSize=input->resultSize;
-    for (auto iter=resultCol,limit=iter+input->resultSize;iter!=limit;++iter)
-      sum+=*iter;
-    checkSums.push_back(sum);
+  auto &results = input->getResults();
+  resultSize = input->resultSize;
+  log_print("is range: {}, result size {}\n", input->isRangeResult(), resultSize);
+  if (resultSize == 0) {
+    checkSums.resize(colInfo.size());
+    return;
+  }
+
+  if (input->isRangeResult()) {
+    assert(results.size() == 1);
+    for (auto &sInfo : colInfo) {
+      uint64_t sum = 0;
+      uint64_t *column = input->getRelation(sInfo.binding)->columns[sInfo.colId];
+      for (uint64_t i = results[0][0]; i < results[0][1]; i++) {
+        sum += column[i];
+      }
+      checkSums.push_back(sum);
+    }
+  } else {
+    for (auto &sInfo : colInfo) {
+      uint64_t sum = 0;
+      uint64_t *column = input->getRelation(sInfo.binding)->columns[sInfo.colId];
+      auto colId = input->resolve(sInfo);
+      // log_print("result size num: {}, column addr: {}, colId: {}\n", results[0].size(), fmt::ptr(column), colId);
+      auto &resulti = results[colId];
+      for (auto i : resulti) {
+        sum += column[i];
+      }
+      checkSums.push_back(sum);
+    }
   }
 }
 //---------------------------------------------------------------------------

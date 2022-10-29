@@ -204,7 +204,9 @@ void Relation::printHistogram(int idx)
     //   log_print("bin {} [{}, {}): {}\n", x.index(), x.bin().lower(), x.bin().upper(), *x);
     // }
   } else if (this->sorts[idx] == Sorted::Likely) {
-    log_print("Max: {}, Min: {}\n", this->sample_maxs[idx], this->sample_mins[idx]);
+    int tmpMax = this->orders[idx] == Order::ASC ? this->maxs[idx] : this->sample_maxs[idx];
+    int tmpMin = this->orders[idx] == Order::ASC ? this->sample_mins[idx] : this->mins[idx];
+    log_print("Max: {}, Min: {}\n", tmpMax, tmpMin);
     log_print(" order: {}\n", this->orders[idx] == Order::ASC ? "ASC" : "DESC");
     log_print("  distinct values cnt: {}\n", this->sample_distinct_count[idx]);
   } else {

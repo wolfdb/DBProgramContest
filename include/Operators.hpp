@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <vector>
 #include <set>
+#include <map>
 #include "Relation.hpp"
 #include "Parser.hpp"
 //---------------------------------------------------------------------------
@@ -34,23 +35,41 @@ class Operator {
   /// Operators materialize their entire result
 
   protected:
-  /// Mapping from select info to data
-  std::unordered_map<SelectInfo,unsigned> select2ResultColId;
-  /// The materialized results
-  std::vector<uint64_t*> resultColumns;
-  /// The tmp results
-  std::vector<std::vector<uint64_t>> tmpResults;
-
+  /// map from binding to relation
+  std::map<unsigned, Relation*> binding2Relations;
+  /// map from binding to linenos
+  std::vector<unsigned> bindingOfIntermediateResults;
+  /// The intermediate results, each bind has one
+  std::vector<std::vector<uint64_t>> intermediateResults;
 
   public:
-  /// Require a column and add it to results
-  virtual bool require(SelectInfo info) = 0;
   /// Resolves a column
-  unsigned resolve(SelectInfo info) { assert(select2ResultColId.find(info)!=select2ResultColId.end()); return select2ResultColId[info]; }
+  virtual unsigned resolve(const SelectInfo &info) {
+    for (auto i = 0; i < bindingOfIntermediateResults.size(); i++) {
+      if (info.binding == bindingOfIntermediateResults[i]) {
+        return i;
+      }
+    }
+    assert(false);  // must find the binding
+    return -1;
+  }
   /// Run
   virtual void run() = 0;
-  /// Get  materialized results
-  virtual std::vector<uint64_t*> getResults();
+  /// Get Relation
+  virtual Relation* getRelation(unsigned binding) {
+    assert(binding2Relations.find(binding) != binding2Relations.end());
+    return binding2Relations[binding];
+  }
+
+  /// Get the bindings
+  virtual std::vector<unsigned>& getBindings() {
+    return bindingOfIntermediateResults;
+  }
+  /// Get intermediate results
+  std::vector<std::vector<uint64_t>>& getResults() {
+    return intermediateResults;
+  }
+
   /// The result size
   uint64_t resultSize=0;
   /// estimate row count
@@ -59,7 +78,6 @@ class Operator {
   /// Is the result from this operator are a range
   virtual bool isRangeResult() = 0;
 
-  std::set<unsigned> bindings;
   /// The destructor
   virtual ~Operator() {};
 };
@@ -75,14 +93,12 @@ class Scan : public Operator {
   /// The constructor
   Scan(Relation& r,unsigned relationBinding) : relation(r), relationBinding(relationBinding) {
     this->eCost = r.rowCount;
-    this->bindings.insert(relationBinding);
+    this->intermediateResults.reserve(1);
+    this->bindingOfIntermediateResults.push_back(relationBinding);
+    binding2Relations[relationBinding] = &relation;
   };
-  /// Require a column and add it to results
-  bool require(SelectInfo info) override;
   /// Run
   void run() override;
-  /// Get  materialized results
-  virtual std::vector<uint64_t*> getResults() override;
 
   /// Is the result from this operator are a range
   bool isRangeResult() override { return true; };
@@ -93,14 +109,10 @@ class FilterScan : public Scan {
   std::vector<FilterInfo> filters;
   /// The input data
   std::vector<uint64_t*> inputData;
-  /// The result index
-  std::vector<uint64_t> index;
   /// Is the index a range
   bool isRange;
   /// Apply filter
-  bool applyFilter(uint64_t id,FilterInfo& f);
-  /// Copy tuple to result
-  void copy2Result(uint64_t id);
+  bool applyFilter(uint64_t id, const FilterInfo& f);
 
   public:
   /// The constructor
@@ -117,15 +129,11 @@ class FilterScan : public Scan {
     }
   };
   /// The constructor
-  FilterScan(Relation& r,FilterInfo& filterInfo) : FilterScan(r,std::vector<FilterInfo>{filterInfo}) {};
-  /// Require a column and add it to results
-  bool require(SelectInfo info) override;
+  FilterScan(Relation& r, FilterInfo& filterInfo) : FilterScan(r,std::vector<FilterInfo>{filterInfo}) {};
   /// Run
   void run() override;
-  /// Get  materialized results
-  virtual std::vector<uint64_t*> getResults() override { return Operator::getResults(); }
 
-  bool isRangeResult() override;
+  bool isRangeResult() override { return isRange; }
 };
 //---------------------------------------------------------------------------
 class Join : public Operator {
@@ -134,6 +142,9 @@ class Join : public Operator {
   /// The join predicate info
   PredicateInfo& pInfo;
   /// Copy tuple to result
+  void copy2ResultLR(uint64_t leftId,uint64_t rightId);
+  void copy2ResultL(uint64_t leftId,uint64_t rightId);
+  void copy2ResultR(uint64_t leftId,uint64_t rightId);
   void copy2Result(uint64_t leftId,uint64_t rightId);
   /// Create mapping for bindings
   void createMappingForBindings();
@@ -142,22 +153,11 @@ class Join : public Operator {
 
   /// The hash table for the join
   HT hashTable;
-  /// Columns that have to be materialized
-  std::unordered_set<SelectInfo> requestedColumns;
-  /// Left/right columns that have been requested
-  std::vector<SelectInfo> requestedColumnsLeft,requestedColumnsRight;
-
-
-  /// The entire input data of left and right
-  std::vector<uint64_t*> leftInputData,rightInputData;
-  /// The input data that has to be copied
-  std::vector<uint64_t*>copyLeftData,copyRightData;
 
   public:
   /// The constructor
-  Join(std::unique_ptr<Operator>&& left,std::unique_ptr<Operator>&& right,PredicateInfo& pInfo) : left(std::move(left)), right(std::move(right)), pInfo(pInfo) {};
-  /// Require a column and add it to results
-  bool require(SelectInfo info) override;
+  Join(std::unique_ptr<Operator>&& left, std::unique_ptr<Operator>&& right,
+          PredicateInfo& pInfo) : left(std::move(left)), right(std::move(right)), pInfo(pInfo) {};
   /// Run
   void run() override;
 
@@ -171,19 +171,22 @@ class SelfJoin : public Operator {
   PredicateInfo& pInfo;
   /// Copy tuple to result
   void copy2Result(uint64_t id);
-  /// The required IUs
-  std::set<SelectInfo> requiredIUs;
-
-  /// The entire input data
-  std::vector<uint64_t*> inputData;
-  /// The input data that has to be copied
-  std::vector<uint64_t*>copyData;
 
   public:
   /// The constructor
   SelfJoin(std::unique_ptr<Operator>&& input,PredicateInfo& pInfo) : input(std::move(input)), pInfo(pInfo) {};
-  /// Require a column and add it to results
-  bool require(SelectInfo info) override;
+  /// Resolves a column
+  unsigned resolve(const SelectInfo &info) override {
+    return input->resolve(info);
+  }
+  /// Get Relation
+  Relation* getRelation(unsigned binding) override {
+    return input->getRelation(binding);
+  }
+  /// Get the bindings
+  std::vector<unsigned>& getBindings() override {
+    return input->getBindings();
+  }
   /// Run
   void run() override;
 
@@ -200,8 +203,6 @@ class Checksum : public Operator {
   std::vector<uint64_t> checkSums;
   /// The constructor
   Checksum(std::unique_ptr<Operator>&& input,std::vector<SelectInfo>& colInfo) : input(std::move(input)), colInfo(colInfo) {};
-  /// Request a column and add it to results
-  bool require(SelectInfo info) override { throw; /* check sum is always on the highest level and thus should never request anything */ }
   /// Run
   void run() override;
 
