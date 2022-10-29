@@ -72,12 +72,12 @@ void Joiner::buildIndex(const std::vector<QueryInfo> &qq)
         uint64_t start = 0;
         for (; start + step < relation.rowCount; start += step) {
           boost::asio::post(pool, [&relation, colId = filterColumn.colId, start, end = start + step]() {
-            relation.buildConcurrentHashMap(colId, start, end);
+            relation.buildConcurrentHashMap(colId, static_cast<uint32_t>(start), static_cast<uint32_t>(end));
           });
           log_print("build map for relation {}, column {}, range [{}, {})\n", filterColumn.relId, filterColumn.colId, start, start + step);
         }
         boost::asio::post(pool, [&relation, colId = filterColumn.colId, start, end = relation.rowCount]() {
-          relation.buildConcurrentHashMap(colId, start, end);
+          relation.buildConcurrentHashMap(colId, static_cast<uint32_t>(start), static_cast<uint32_t>(end));
         });
         log_print("build map for relation {}, column {}, range [{}, {})\n", filterColumn.relId, filterColumn.colId, start, relation.rowCount);
         relation.hasHmapBuilt[filterColumn.colId] = true;
@@ -209,7 +209,7 @@ unique_ptr<Operator> Joiner::buildMyPlanTree(QueryInfo& query)
   std::vector<PredicateInfo> predicates;
   while (!pq.empty()) {
     auto &predicate = pq.top();
-    log_print("eCost:{}\n", predicate.eCost);
+    log_print("predicate eCost:{}\n", predicate.eCost);
     predicates.emplace_back(std::move(predicate));
     pq.pop();
   }

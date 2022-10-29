@@ -11,7 +11,7 @@ void Scan::run()
   // Run
 {
   resultSize=relation.rowCount;
-  intermediateResults.push_back({0, relation.rowCount});
+  intermediateResults.push_back({0, static_cast<uint32_t>(relation.rowCount)});
   log_print("scan resultSize: {}\n", resultSize);
 }
 //---------------------------------------------------------------------------
@@ -36,8 +36,8 @@ void FilterScan::run()
 {
   // do the apply for each filter
   std::sort(filters.begin(), filters.end(), [](const FilterInfo &left, const FilterInfo &right) { return left.eCost < right.eCost; });
-  vector<uint64_t> index{0, relation.rowCount};
-  vector<uint64_t> tmp;
+  vector<uint32_t> index{0, static_cast<uint32_t>(relation.rowCount)};
+  vector<uint32_t> tmp;
   bool isRange = true;
   bool nomatch = false;
   for (auto &f : filters) {
@@ -148,7 +148,7 @@ void FilterScan::run()
           assert(index.size() == 2);
           tmp.reserve(index[1] - index[0]);
           // we can use simd intrinsic for the following range
-          for (int64_t i = index[0]; i < index[1]; i++) {
+          for (uint32_t i = index[0]; i < index[1]; i++) {
             if (column[i] == f.constant) {
               tmp.push_back(i);
             }
@@ -181,7 +181,7 @@ void FilterScan::run()
           assert(index.size() == 2);
           tmp.reserve(index[1] - index[0]);
           // we can use simd intrinsic for the following range
-          for (int64_t i = index[0]; i < index[1]; i++) {
+          for (uint32_t i = index[0]; i < index[1]; i++) {
             if (column[i] > f.constant) {
               tmp.push_back(i);
             }
@@ -214,7 +214,7 @@ void FilterScan::run()
           assert(index.size() == 2);
           tmp.reserve(index[1] - index[0]);
           // we can use simd intrinsic for the following range
-          for (int64_t i = index[0]; i < index[1]; i++) {
+          for (uint32_t i = index[0]; i < index[1]; i++) {
             if (column[i] < f.constant) {
               tmp.push_back(i);
             }
@@ -304,14 +304,14 @@ void FilterScan::run()
   // }
 }
 //---------------------------------------------------------------------------
-void Join::copy2ResultLR(uint64_t leftId, uint64_t rightId)
+void Join::copy2ResultLR(uint32_t leftId, uint32_t rightId)
 {
   assert(intermediateResults.size() == 2);
   intermediateResults[0].push_back(leftId);
   intermediateResults[1].push_back(rightId);
   ++ resultSize;
 }
-void Join::copy2ResultL(uint64_t leftId, uint64_t rightId)
+void Join::copy2ResultL(uint32_t leftId, uint32_t rightId)
 {
   auto &rightResults = right->getResults();
   intermediateResults[0].push_back(leftId);
@@ -321,7 +321,7 @@ void Join::copy2ResultL(uint64_t leftId, uint64_t rightId)
   }
   ++ resultSize;
 }
-void Join::copy2ResultR(uint64_t leftId, uint64_t rightId)
+void Join::copy2ResultR(uint32_t leftId, uint32_t rightId)
 {
   auto &leftResults = left->getResults();
   unsigned index = 0;
@@ -331,7 +331,7 @@ void Join::copy2ResultR(uint64_t leftId, uint64_t rightId)
   intermediateResults[index].push_back(rightId);
   ++ resultSize;
 }
-void Join::copy2Result(uint64_t leftId, uint64_t rightId)
+void Join::copy2Result(uint32_t leftId, uint32_t rightId)
   // Copy to result
 {
   auto &leftResults = left->getResults();
@@ -396,8 +396,9 @@ void Join::run()
     assert(leftResults.size() == 1);
     log_print("leftColId: {} leftBinding: {}, rightColId: {}, rightBinding: {}\n", leftColId, leftBinding, rightColId, rightBinding);
     auto &leftResult = leftResults[0];
-    log_print("range [{}, {})\n", leftResult[0], leftResult[1]);
-    for (uint64_t i = leftResult[0]; i < leftResult[1]; i++) {
+
+    // log_print("range [{}, {})\n", leftResult[0], leftResult[1]);
+    for (uint32_t i = leftResult[0]; i < leftResult[1]; i++) {
       // simd ?
       // if (leftBinding == 2) {
       //   log_print(" emplace {}, {}\n", leftColumn[i], i);
@@ -409,7 +410,7 @@ void Join::run()
     if (right->isRangeResult()) {
       assert(rightResults.size() == 1);
       auto &rightResult = rightResults[0];
-      for (uint64_t i = rightResult[0]; i < rightResult[1]; i++) {
+      for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
         auto rightKey = rightColumn[i];
         auto range = hashTable.equal_range(rightKey);
         for (auto iter = range.first; iter != range.second; ++iter) {
@@ -418,8 +419,9 @@ void Join::run()
       }
     } else {
       auto rightResult = rightResults[rightColId];
+
       log_print("right result size: {}\n", rightResult.size());
-      for (uint64_t i = 0; i < rightResult.size(); i++) {
+      for (uint32_t i = 0; i < rightResult.size(); i++) {
         auto rightKey = rightColumn[rightResult[i]];
         // log_print("  rightKey: {}\n", rightKey);
         auto range = hashTable.equal_range(rightKey);
@@ -432,7 +434,7 @@ void Join::run()
   } else {
     // Build phase
     auto leftResult = leftResults[leftColId];
-    for (uint64_t i = 0; i < leftResult.size(); i++) {
+    for (uint32_t i = 0; i < leftResult.size(); i++) {
       // multi threads
       hashTable.emplace(leftColumn[leftResult[i]], i);
     }
@@ -440,7 +442,7 @@ void Join::run()
     if (right->isRangeResult()) {
       assert(rightResults.size() == 1);
       auto &rightResult = rightResults[0];
-      for (uint64_t i = rightResult[0]; i < rightResult[1]; i++) {
+      for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
         auto rightKey = rightColumn[i];
         auto range = hashTable.equal_range(rightKey);
         for (auto iter = range.first; iter != range.second; ++iter) {
@@ -449,7 +451,7 @@ void Join::run()
       }
     } else {
       auto &rightResult = rightResults[rightColId];
-      for (uint64_t i = 0; i < rightResult.size(); i++) {
+      for (uint32_t i = 0; i < rightResult.size(); i++) {
         auto rightKey = rightColumn[rightResult[i]];
         auto range = hashTable.equal_range(rightKey);
         for (auto iter = range.first; iter != range.second; ++iter) {
@@ -461,7 +463,7 @@ void Join::run()
   log_print("join resultSize: {}\n", resultSize);
 }
 //---------------------------------------------------------------------------
-void SelfJoin::copy2Result(uint64_t id)
+void SelfJoin::copy2Result(uint32_t id)
   // Copy to result
 {
   auto &inputResults = input->getResults();
@@ -485,7 +487,7 @@ void SelfJoin::run()
 
   auto leftCol=inputResults[leftColId];
   auto rightCol=inputResults[rightColId];
-  for (uint64_t i = 0; i < input->resultSize; ++i) {
+  for (uint32_t i = 0; i < input->resultSize; ++i) {
     if (leftColumn[leftCol[i]] == rightColumn[rightCol[i]])
       copy2Result(i);
   }
@@ -510,7 +512,7 @@ void Checksum::run()
     for (auto &sInfo : colInfo) {
       uint64_t sum = 0;
       uint64_t *column = input->getRelation(sInfo.binding)->columns[sInfo.colId];
-      for (uint64_t i = results[0][0]; i < results[0][1]; i++) {
+      for (uint32_t i = results[0][0]; i < results[0][1]; i++) {
         sum += column[i];
       }
       checkSums.push_back(sum);

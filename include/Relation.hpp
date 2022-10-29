@@ -29,7 +29,7 @@ class Relation {
   public:
   enum Sorted : char { True, False, Likely };
   enum Order : char { ASC, DESC };
-  /// The number of tuples
+  /// The number of tuples, this must be uint64_t
   uint64_t rowCount;
   /// The join column containing the keys
   std::vector<uint64_t*> columns;
@@ -58,7 +58,7 @@ class Relation {
   std::vector<int64_t> distinct_count;
   // value -> index map
   // std::vector<std::unordered_multimap<uint64_t, uint64_t>> columnHmap;
-  std::vector<oneapi::tbb::concurrent_unordered_multimap<uint64_t, uint64_t>> columnHmap;
+  std::vector<oneapi::tbb::concurrent_unordered_multimap<uint64_t, uint32_t>> columnHmap;
   std::vector<bool> hasHmapBuilt;
 
   /// Real Histogram
@@ -77,7 +77,7 @@ class Relation {
   /// print histogram of column i
   void printHistogram(int idx);
   /// build concurrent hash map for column i, with range [start, end)
-  void buildConcurrentHashMap(int idx, uint64_t start, uint64_t end);
+  void buildConcurrentHashMap(int idx, uint32_t start, uint32_t end);
 
   /// Calculate the estimate cost
   void calThenSetEstimateCost(FilterInfo &filter);
