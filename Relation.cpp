@@ -220,14 +220,14 @@ void Relation::printHistogram(int idx)
   }
 }
 //---------------------------------------------------------------------------
-void Relation::buildConcurrentHashMap(int idx, uint64_t start, uint64_t end)
+void Relation::buildConcurrentHashMap(int idx, uint32_t start, uint32_t end)
   // build concurrent hash map for column i, with range [start, end)
 {
   assert(idx < columns.size());
   auto &hashmap = this->columnHmap[idx];
   uint64_t *column = this->columns[idx];
   // unrolling later to see the performance gain
-  for (uint64_t i = start; i < end; i++) {
+  for (uint32_t i = start; i < end; i++) {
     hashmap.insert(std::make_pair(column[i], i));
   }
 }
@@ -324,7 +324,7 @@ void Relation::loadRelation(const char* fileName)
   }
 
   this->rowCount=*reinterpret_cast<uint64_t*>(addr);
-  addr+=sizeof(rowCount);
+  addr+=sizeof(uint64_t);
   auto numColumns=*reinterpret_cast<size_t*>(addr);
   addr+=sizeof(size_t);
   for (unsigned i=0;i<numColumns;++i) {

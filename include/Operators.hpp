@@ -40,7 +40,8 @@ class Operator {
   /// map from binding to linenos
   std::vector<unsigned> bindingOfIntermediateResults;
   /// The intermediate results, each bind has one
-  std::vector<std::vector<uint64_t>> intermediateResults;
+  /// We assume there will be no more that 2^32 lines of data for each table
+  std::vector<std::vector<uint32_t>> intermediateResults;
 
   public:
   /// Resolves a column
@@ -66,7 +67,7 @@ class Operator {
     return bindingOfIntermediateResults;
   }
   /// Get intermediate results
-  std::vector<std::vector<uint64_t>>& getResults() {
+  std::vector<std::vector<uint32_t>>& getResults() {
     return intermediateResults;
   }
 
@@ -107,8 +108,6 @@ class Scan : public Operator {
 class FilterScan : public Scan {
   /// The filter info
   std::vector<FilterInfo> filters;
-  /// The input data
-  std::vector<uint64_t*> inputData;
   /// Is the index a range
   bool isRange;
   /// Apply filter
@@ -142,14 +141,15 @@ class Join : public Operator {
   /// The join predicate info
   PredicateInfo& pInfo;
   /// Copy tuple to result
-  void copy2ResultLR(uint64_t leftId,uint64_t rightId);
-  void copy2ResultL(uint64_t leftId,uint64_t rightId);
-  void copy2ResultR(uint64_t leftId,uint64_t rightId);
-  void copy2Result(uint64_t leftId,uint64_t rightId);
+  void copy2ResultLR(uint32_t leftId, uint32_t rightId);
+  void copy2ResultL(uint32_t leftId, uint32_t rightId);
+  void copy2ResultR(uint32_t leftId, uint32_t rightId);
+  void copy2Result(uint32_t leftId, uint32_t rightId);
   /// Create mapping for bindings
   void createMappingForBindings();
 
-  using HT=std::unordered_multimap<uint64_t,uint64_t>;
+  // value to line no multimap
+  using HT=std::unordered_multimap<uint64_t,uint32_t>;
 
   /// The hash table for the join
   HT hashTable;
@@ -170,7 +170,7 @@ class SelfJoin : public Operator {
   /// The join predicate info
   PredicateInfo& pInfo;
   /// Copy tuple to result
-  void copy2Result(uint64_t id);
+  void copy2Result(uint32_t id);
 
   public:
   /// The constructor
