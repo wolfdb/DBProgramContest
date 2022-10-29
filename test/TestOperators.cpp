@@ -14,15 +14,11 @@ class OperatorTest : public testing::Test {
 TEST_F(OperatorTest, Scan) {
   unsigned relBinding=5;
   Scan scan(r1,relBinding);
-  scan.require(SelectInfo(relBinding,0));
-  scan.require(SelectInfo(relBinding,2));
   scan.run();
   auto results=scan.getResults();
-  ASSERT_EQ(results.size(),2ull);
-  auto colId1=scan.resolve(SelectInfo{relBinding,0});
-  auto colId2=scan.resolve(SelectInfo{relBinding,2});
-  ASSERT_EQ(results[colId1],r1.columns[0]);
-  ASSERT_EQ(results[colId2],r1.columns[2]);
+  ASSERT_EQ(results.size(),1ull);
+  ASSERT_EQ(results[0][0],0);
+  ASSERT_EQ(results[0][1],r1.rowCount);
 }
 //---------------------------------------------------------------------------
 TEST_F(OperatorTest, ScanWithSelection) {
@@ -41,8 +37,6 @@ TEST_F(OperatorTest, ScanWithSelection) {
   {
     FilterInfo fInfo(sInfo,constant,FilterInfo::Comparison::Equal);
     FilterScan filterScan(r1,fInfo);
-    filterScan.require(SelectInfo(relBinding,0));
-    filterScan.require(SelectInfo(relBinding,2));
     filterScan.run();
 
     ASSERT_EQ(filterScan.resultSize,1ull);
@@ -55,7 +49,6 @@ TEST_F(OperatorTest, ScanWithSelection) {
     FilterInfo fInfo(sInfo,constant,FilterInfo::Comparison::Greater);
     FilterScan filterScan(r1,fInfo);
     colId=1;
-    filterScan.require(SelectInfo(relBinding,colId));
     filterScan.run();
 
     ASSERT_EQ(filterScan.resultSize,2ull);
@@ -93,7 +86,6 @@ TEST_F(OperatorTest, Join) {
     auto leftPtr=make_unique<Scan>(r1Scan);
     auto rightPtr=make_unique<Scan>(r1Scan2);
     Join join(move(leftPtr),move(rightPtr),pInfo);
-    join.require(SelectInfo(r1Bind,0));
     join.run();
 
     ASSERT_EQ(join.resultSize,r1.rowCount);
@@ -112,10 +104,6 @@ TEST_F(OperatorTest, Join) {
     auto rightPtr=make_unique<Scan>(r1Scan);
     PredicateInfo pInfo(SelectInfo(1,r2Bind,1),SelectInfo(0,r1Bind,2));
     Join join(move(leftPtr),move(rightPtr),pInfo);
-    join.require(SelectInfo(r1Bind,1));
-    join.require(SelectInfo(r2Bind,3));
-    // Request a columns two times (should not have an effect)
-    join.require(SelectInfo(r2Bind,3));
     join.run();
 
     ASSERT_EQ(join.resultSize,r1.rowCount);
@@ -185,7 +173,6 @@ TEST_F(OperatorTest, SelfJoin) {
   {
     PredicateInfo pInfo(SelectInfo(1,relBinding,1),SelectInfo(1,relBinding,2));
     SelfJoin selfJoin(make_unique<Scan>(r1Scan),pInfo);
-    selfJoin.require(SelectInfo(relBinding,0));
     selfJoin.run();
     selfJoin.resolve(SelectInfo(relBinding,0));
     ASSERT_EQ(selfJoin.resultSize,r1.rowCount);
