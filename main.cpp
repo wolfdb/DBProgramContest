@@ -1,6 +1,7 @@
 #include <iostream>
 #include "Joiner.hpp"
 #include "Parser.hpp"
+#include "Log.hpp"
 
 using namespace std;
 //---------------------------------------------------------------------------
@@ -11,6 +12,14 @@ int main(int argc, char* argv[]) {
    while (getline(cin, line)) {
       if (line == "Done") break;
       joiner.addRelation(line.c_str());
+   }
+
+   for (int i = 0; i < joiner.relations.size(); i++) {
+      auto &rel = joiner.relations[i];
+      out.print("relation :{}\n", i);
+      for (int j = 0; j < rel.columns.size(); j++) {
+         out.print("  column {} addr {}\n", j, fmt::ptr(rel.columns[j]));
+      }
    }
    // Preparation phase (not timed)
    // Build histograms, indexes,...

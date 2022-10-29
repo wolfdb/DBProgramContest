@@ -30,6 +30,7 @@ project (Sig18Test)
 
 enable_testing()
 
-set(SOURCE_FILES TestRelation.cpp TestParser.cpp TestOperators.cpp)
+# set(SOURCE_FILES TestRelation.cpp TestParser.cpp TestOperators.cpp)
+set(SOURCE_FILES TestRelation.cpp TestParser.cpp)
 add_executable(tester main.cpp ${SOURCE_FILES})
 target_link_libraries(tester database gtest gtest_main pthread)
