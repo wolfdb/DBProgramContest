@@ -9,7 +9,8 @@
 #include <vector>
 #include <chrono>
 #include <thread>
-#include <queue>
+#include <cmath>
+#include <algorithm>
 #include <boost/asio/thread_pool.hpp>
 #include <boost/asio/post.hpp>
 #include "Parser.hpp"
@@ -198,24 +199,21 @@ unique_ptr<Operator> Joiner::buildMyPlanTree(QueryInfo& query)
   }
 
   // Second for every Predicate(i.e. Join), add the operator to a PQ
-  auto cmp = [](PredicateInfo &left, PredicateInfo &right) { return left.eCost > right.eCost; };
-  std::priority_queue<PredicateInfo, std::vector<PredicateInfo>, decltype(cmp)> pq(cmp);
+  auto cmp = [](PredicateInfo &left, PredicateInfo &right) { return left.eCost < right.eCost; };
   for (auto &pInfo : query.predicates) {
-    pInfo.eCost = std::min(estimateCost(pInfo.left, query), estimateCost(pInfo.right, query));
-    pq.push(pInfo);
+    if (pInfo.left.binding == pInfo.right.binding) {
+      pInfo.eCost = estimateCost(pInfo.left, query);
+      pInfo.eCost = static_cast<uint64_t>(::sqrt(pInfo.eCost));
+    } else {
+      pInfo.eCost = std::min(estimateCost(pInfo.left, query), estimateCost(pInfo.right, query));
+    }
   }
 
-  // construct a queue from priority queue
-  std::vector<PredicateInfo> predicates;
-  while (!pq.empty()) {
-    auto &predicate = pq.top();
-    log_print("predicate eCost:{}\n", predicate.eCost);
-    predicates.emplace_back(std::move(predicate));
-    pq.pop();
+  // sort the predicates
+  std::sort(query.predicates.begin(), query.predicates.end(), cmp);
+  for (auto &predicate : query.predicates) {
+    log_print("predicate {}, eCost:{}\n", predicate.dumpText(), predicate.eCost);
   }
-
-  // swap to avoid Use-After-Free exception
-  std::swap(predicates, query.predicates);
 
   // following is copied from buildPlanTree
   set<unsigned> usedRelations;
@@ -232,33 +230,46 @@ unique_ptr<Operator> Joiner::buildMyPlanTree(QueryInfo& query)
     root = make_unique<Join>(move(left), move(right), firstJoin);
   }
 
-  for (unsigned i = 1; i < query.predicates.size(); ++i) {
-    auto& pInfo = query.predicates[i];
-    auto& leftInfo = pInfo.left;
-    auto& rightInfo = pInfo.right;
-    unique_ptr<Operator> left, right;
-    switch (analyzeInputOfJoin(usedRelations, leftInfo, rightInfo)) {
-      case QueryGraphProvides::Left:
-        left = move(root);
-        right = addScan(usedRelations, rightInfo, query);
-        root = make_unique<Join>(move(left), move(right), pInfo);
-        break;
-      case QueryGraphProvides::Right:
-        left = addScan(usedRelations, leftInfo, query);
-        right = move(root);
-        root = make_unique<Join>(move(left), move(right), pInfo);
-        break;
-      case QueryGraphProvides::Both:
-        // All relations of this join are already used somewhere else in the query.
-        // Thus, we have either a cycle in our join graph or more than one join predicate per join.
-        root = make_unique<SelfJoin>(move(root),pInfo);
-        break;
-      case QueryGraphProvides::None:
-        // Process this predicate later when we can connect it to the other joins
-        // We never have cross products
-        query.predicates.push_back(pInfo);
-        break;
-    };
+  std::vector<bool> predicateUsed(query.predicates.size(), false);
+  auto cnt = query.predicates.size() - 1;
+
+  while (cnt > 0) {
+    for (unsigned i = 1; i < query.predicates.size(); ++i) {
+      if (predicateUsed[i]) {
+        continue;
+      }
+      auto& pInfo = query.predicates[i];
+      auto& leftInfo = pInfo.left;
+      auto& rightInfo = pInfo.right;
+      unique_ptr<Operator> left, right;
+      switch (analyzeInputOfJoin(usedRelations, leftInfo, rightInfo)) {
+        case QueryGraphProvides::Left:
+          left = move(root);
+          right = addScan(usedRelations, rightInfo, query);
+          root = make_unique<Join>(move(left), move(right), pInfo);
+          predicateUsed[i] = true;
+          cnt --;
+          break;
+        case QueryGraphProvides::Right:
+          left = addScan(usedRelations, leftInfo, query);
+          right = move(root);
+          root = make_unique<Join>(move(left), move(right), pInfo);
+          predicateUsed[i] = true;
+          cnt --;
+          break;
+        case QueryGraphProvides::Both:
+          // All relations of this join are already used somewhere else in the query.
+          // Thus, we have either a cycle in our join graph or more than one join predicate per join.
+          root = make_unique<SelfJoin>(move(root),pInfo);
+          predicateUsed[i] = true;
+          cnt --;
+          break;
+        case QueryGraphProvides::None:
+          // Process this predicate later when we can connect it to the other joins
+          // We never have cross products
+          break;
+      }
+    }
   }
 
   return root;
