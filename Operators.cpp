@@ -6,13 +6,16 @@
 #include "Log.hpp"
 //---------------------------------------------------------------------------
 using namespace std;
+using namespace std::chrono;
 //---------------------------------------------------------------------------
 void Scan::run()
   // Run
 {
+  milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   resultSize=relation.rowCount;
   intermediateResults.push_back({0, static_cast<uint32_t>(relation.rowCount)});
-  out.print("scan resultSize: {}\n", resultSize);
+  milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+  out.print("scan resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
 }
 //---------------------------------------------------------------------------
 bool FilterScan::applyFilter(uint64_t i, const FilterInfo& f)
@@ -34,6 +37,7 @@ bool FilterScan::applyFilter(uint64_t i, const FilterInfo& f)
 void FilterScan::run()
   // Run
 {
+  milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   // do the apply for each filter
   std::sort(filters.begin(), filters.end(), [](const FilterInfo &left, const FilterInfo &right) { return left.eCost < right.eCost; });
   vector<uint32_t> index{0, static_cast<uint32_t>(relation.rowCount)};
@@ -261,7 +265,8 @@ void FilterScan::run()
   // }
   this->resultSize = isRange ? index[1] - index[0] : index.size();
   this->intermediateResults.emplace_back(std::move(index));
-  out.print("filter scan resultSize: {}, isRange :{}\n", resultSize, isRange);
+  milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+  out.print("filter scan resultSize: {}, isRange :{}, run time {} ms\n", resultSize, isRange, end.count() - start.count());
 
   // vector<uint64_t> idxvec;
   // vector<uint64_t> tmp2;
@@ -353,7 +358,7 @@ void Join::run()
 {
   left->run();
   right->run();
-
+  milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   // Use smaller input for build
   if (left->resultSize>right->resultSize) {
     swap(left,right);
@@ -379,6 +384,12 @@ void Join::run()
     bindingOfIntermediateResults[resColId++] = binding;
     assert(binding2Relations.find(binding) == binding2Relations.end());
     binding2Relations[binding] = right->getRelation(binding);
+  }
+
+  if (left->resultSize == 0) {
+    milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    out.print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
+    return;
   }
 
   auto leftColId = left->resolve(pInfo.left);
@@ -458,7 +469,8 @@ void Join::run()
       }
     }
   }
-  out.print("join resultSize: {}\n", resultSize);
+  milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+  out.print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
 }
 //---------------------------------------------------------------------------
 void SelfJoin::copy2Result(uint32_t id)
@@ -474,6 +486,7 @@ void SelfJoin::run()
   // Run
 {
   input->run();
+  milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   auto &inputResults = input->getResults();
   intermediateResults.resize(inputResults.size());
 
@@ -485,23 +498,36 @@ void SelfJoin::run()
 
   auto leftCol=inputResults[leftColId];
   auto rightCol=inputResults[rightColId];
-  for (uint32_t i = 0; i < input->resultSize; ++i) {
-    if (leftColumn[leftCol[i]] == rightColumn[rightCol[i]])
-      copy2Result(i);
+  if (input->isRangeResult()) {
+    assert(inputResults.size() == 1);
+    for (uint32_t i = inputResults[0][0]; i < inputResults[0][1]; i++) {
+      if (leftColumn[i] == rightColumn[i]) {
+        intermediateResults[0].push_back(i);
+        ++resultSize;
+      }
+    }
+  } else {
+    for (uint32_t i = 0; i < input->resultSize; ++i) {
+      if (leftColumn[leftCol[i]] == rightColumn[rightCol[i]])
+        copy2Result(i);
+    }
   }
-  out.print("self join resultSize: {}\n", resultSize);
+
+  milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+  out.print("self join resultSize: {}, isRange: {}, run time {} ms\n", resultSize, input->isRangeResult(), end.count() - start.count());
 }
 //---------------------------------------------------------------------------
 void Checksum::run()
   // Run
 {
   input->run();
-
+  milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   auto &results = input->getResults();
   resultSize = input->resultSize;
-  out.print("is range: {}, result size {}\n", input->isRangeResult(), resultSize);
   if (resultSize == 0) {
     checkSums.resize(colInfo.size());
+    milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    out.print("checksum result size {}, is range: {}, run time {} ms\n", resultSize,input->isRangeResult(), end.count() - start.count());
     return;
   }
 
@@ -528,5 +554,7 @@ void Checksum::run()
       checkSums.push_back(sum);
     }
   }
+  milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+  out.print("checksum result size {}, is range: {}, run time {} ms\n", resultSize,input->isRangeResult(), end.count() - start.count());
 }
 //---------------------------------------------------------------------------
