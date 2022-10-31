@@ -1,8 +1,11 @@
-#include <Operators.hpp>
 #include <cassert>
 #include <iostream>
 #include <queue>
 #include <algorithm>
+#include <boost/asio/thread_pool.hpp>
+#include <boost/asio/post.hpp>
+#include "Operators.hpp"
+#include "Consts.hpp"
 #include "Log.hpp"
 //---------------------------------------------------------------------------
 using namespace std;
@@ -594,20 +597,26 @@ void Checksum::run()
     }
   } else {
     // first build cache
+    boost::asio::thread_pool pool(std::min(SUM_CACHE_MAX_POOL_SIZE, static_cast<int>(colInfo.size())));
     for (auto &sInfo : colInfo) {
       if (sumsCache.find(sInfo) != sumsCache.end()) {
         continue;
       }
-      uint64_t sum = 0;
-      uint64_t *column = input->getRelation(sInfo.binding)->columns[sInfo.colId];
+      sumsCache.insert({sInfo, 0});
       auto colId = input->resolve(sInfo);
-      // out.print("result size num: {}, column addr: {}, colId: {}\n", results[0].size(), fmt::ptr(column), colId);
       auto &resulti = results[colId];
-      for (auto i : resulti) {
-        sum += column[i];
-      }
-      sumsCache.insert({sInfo, sum});
+      uint64_t *column = input->getRelation(sInfo.binding)->columns[sInfo.colId];
+      // out.print("result size num: {}, column addr: {}, colId: {}\n", results[0].size(), fmt::ptr(column), colId);
+
+      boost::asio::post(pool, [&sInfo, &resulti, column, this]() {
+        uint64_t sum = 0;
+        for (auto i : resulti) {
+          sum += column[i];
+        }
+        sumsCache[sInfo] = sum;
+      });
     }
+    pool.join();
     // then check cache for sum result
     for (auto &sInfo : colInfo) {
       checkSums.push_back(sumsCache[sInfo]);
