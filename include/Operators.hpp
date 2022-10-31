@@ -180,6 +180,8 @@ class Checksum : public Operator {
   /// The join predicate info
   std::vector<SelectInfo>& colInfo;
 
+  std::map<SelectInfo, uint64_t> sumsCache; 
+
   public:
   std::vector<uint64_t> checkSums;
   /// The constructor

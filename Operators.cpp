@@ -593,7 +593,11 @@ void Checksum::run()
       checkSums.push_back(sum);
     }
   } else {
+    // first build cache
     for (auto &sInfo : colInfo) {
+      if (sumsCache.find(sInfo) != sumsCache.end()) {
+        continue;
+      }
       uint64_t sum = 0;
       uint64_t *column = input->getRelation(sInfo.binding)->columns[sInfo.colId];
       auto colId = input->resolve(sInfo);
@@ -602,7 +606,11 @@ void Checksum::run()
       for (auto i : resulti) {
         sum += column[i];
       }
-      checkSums.push_back(sum);
+      sumsCache.insert({sInfo, sum});
+    }
+    // then check cache for sum result
+    for (auto &sInfo : colInfo) {
+      checkSums.push_back(sumsCache[sInfo]);
     }
   }
   milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());

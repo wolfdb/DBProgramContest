@@ -18,6 +18,8 @@ struct SelectInfo {
    SelectInfo(RelationId relId,unsigned b,unsigned colId) : relId(relId), binding(b), colId(colId) {};
    /// The constructor if relation id does not matter
    SelectInfo(unsigned b,unsigned colId) : SelectInfo(-1,b,colId) {};
+   /// Copy constructor
+   SelectInfo(const SelectInfo &info) : relId(info.relId), binding(info.binding), colId(info.colId) {};
 
    /// Equality operator
    inline bool operator==(const SelectInfo& o) const {
