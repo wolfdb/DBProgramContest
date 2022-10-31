@@ -402,6 +402,57 @@ void Join::run()
 
   // log_print("left column addr {}, right column addr {}\n", fmt::ptr(leftColumn), fmt::ptr(rightColumn));
 
+  // If left resultSize == 1, no not need to build hash table
+  if (left->resultSize == 1) {
+    if (left->isRangeResult()) {
+      assert(leftResults.size() == 1);
+      uint32_t index = leftResults[0][0];
+      uint64_t value = leftColumn[index];
+      if (right->isRangeResult()) {
+        auto &rightResult = rightResults[0];
+        for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
+          if (value == rightColumn[i]) {
+            copy2ResultLR(index, i);
+          }
+        }
+      } else {
+        auto rightResult = rightResults[rightColId];
+        log_print("right result size: {}\n", rightResult.size());
+        for (uint32_t i = 0; i < rightResult.size(); i++) {
+          if (value == rightColumn[rightResult[i]]) {
+            copy2ResultL(index, i);
+          }
+        }
+      }
+    } else {
+      auto leftResult = leftResults[leftColId];
+      assert(leftResult.size() == 1);
+      uint32_t index = leftResult[0];
+      uint64_t value = leftColumn[index];
+      if (right->isRangeResult()) {
+        assert(rightResults.size() == 1);
+        auto &rightResult = rightResults[0];
+        for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
+          if (value == rightColumn[i]) {
+            copy2ResultR(0, i);
+          }
+        }
+      } else {
+        auto rightResult = rightResults[rightColId];
+        log_print("right result size: {}\n", rightResult.size());
+        for (uint32_t i = 0; i < rightResult.size(); i++) {
+          if (value == rightColumn[rightResult[i]]) {
+            copy2Result(0, i);
+          }
+        }
+      }
+    }
+
+    milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    log_print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
+    return;
+  }
+
   hashTable.reserve(left->resultSize * 2);
   if (left->isRangeResult()) {
     // Build phase
