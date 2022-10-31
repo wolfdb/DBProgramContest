@@ -31,7 +31,7 @@ int main(int argc, char* argv[]) {
    while (getline(cin, line)) {
       if (line == "F") { // End of a batch
          // build concurrent_unorder_multimap for unsorted columns that with '=' comparator
-         joiner.buildIndex(qq);
+         // joiner.buildIndex(qq);
          for (auto &i : qq) {
             cout << joiner.join(i);
          }
