@@ -22,3 +22,11 @@ Run Harness Test
 #run public workload
 ./runTestharness.sh workloads/public
 ```
+
+TODO:
+
+[] merge join when the join condition are both sorted
+[] build hash table concurrently
+[] probe concurrently
+[] concurrently execute the queries
+[] USE AVX512 selection to speed up filter scan
