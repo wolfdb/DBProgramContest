@@ -362,6 +362,7 @@ void Join::run()
   left->run();
   right->run();
   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+  milliseconds end, tmpms;
   // Use smaller input for build
   if (left->resultSize>right->resultSize) {
     swap(left,right);
@@ -390,7 +391,7 @@ void Join::run()
   }
 
   if (left->resultSize == 0) {
-    milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
     out.print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
     return;
   }
@@ -403,6 +404,7 @@ void Join::run()
   uint64_t *rightColumn = right->getRelation(rightBinding)->columns[pInfo.right.colId];
 
   // out.print("left column addr {}, right column addr {}\n", fmt::ptr(leftColumn), fmt::ptr(rightColumn));
+  out.print("leftBinding: {}, leftColId: {}, rightBinding: {}, rightColId: {}\n", leftBinding, pInfo.left.colId, rightBinding, pInfo.right.colId);
 
   // If left resultSize == 1, no not need to build hash table
   if (left->resultSize == 1) {
@@ -450,16 +452,16 @@ void Join::run()
       }
     }
 
-    milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-    out.print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
+    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    out.print("left resultSize == 1, join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
     return;
   }
 
   hashTable.reserve(left->resultSize * 2);
   if (left->isRangeResult()) {
     // Build phase
+    tmpms = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
     assert(leftResults.size() == 1);
-    out.print("leftColId: {} leftBinding: {}, rightColId: {}, rightBinding: {}\n", leftColId, leftBinding, rightColId, rightBinding);
     auto &leftResult = leftResults[0];
     // out.print("range [{}, {})\n", leftResult[0], leftResult[1]);
     for (uint32_t i = leftResult[0]; i < leftResult[1]; i++) {
@@ -470,10 +472,14 @@ void Join::run()
       // out.print(" emplace {}, {}\n", leftColumn[i], i);
       hashTable.emplace(leftColumn[i], i);
     }
+    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    out.print("Left result size: {}, is range: true, build hashmap time {} ms\n", leftResult[1] - leftResult[0], end.count() - tmpms.count());
+    tmpms = end;
     // Probe phase
     if (right->isRangeResult()) {
       assert(rightResults.size() == 1);
       auto &rightResult = rightResults[0];
+      out.print("right result size: {}, is range: true\n", rightResult[1] - rightResult[0]);
       for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
         auto rightKey = rightColumn[i];
         auto range = hashTable.equal_range(rightKey);
@@ -482,8 +488,8 @@ void Join::run()
         }
       }
     } else {
-      auto rightResult = rightResults[rightColId];
-      out.print("right result size: {}\n", rightResult.size());
+      auto &rightResult = rightResults[rightColId];
+      out.print("right result size: {}, is range: false\n", rightResult.size());
       for (uint32_t i = 0; i < rightResult.size(); i++) {
         auto rightKey = rightColumn[rightResult[i]];
         // out.print("  rightKey: {}\n", rightKey);
@@ -494,17 +500,24 @@ void Join::run()
         }
       }
     }
+    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    out.print("probe phase time {} ms\n", end.count() - tmpms.count());
   } else {
     // Build phase
+    tmpms = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
     auto leftResult = leftResults[leftColId];
     for (uint32_t i = 0; i < leftResult.size(); i++) {
       // multi threads
       hashTable.emplace(leftColumn[leftResult[i]], i);
     }
+    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    out.print("Left result size: {}, is range: false, build hashmap time {} ms\n", leftResult.size(), end.count() - tmpms.count());
+    tmpms = end;
     // Probe phase
     if (right->isRangeResult()) {
       assert(rightResults.size() == 1);
       auto &rightResult = rightResults[0];
+      out.print("right result size: {}, is range: true\n", rightResult[1] - rightResult[0]);
       for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
         auto rightKey = rightColumn[i];
         auto range = hashTable.equal_range(rightKey);
@@ -514,6 +527,7 @@ void Join::run()
       }
     } else {
       auto &rightResult = rightResults[rightColId];
+      out.print("right result size: {}, is range: false\n", rightResult.size());
       for (uint32_t i = 0; i < rightResult.size(); i++) {
         auto rightKey = rightColumn[rightResult[i]];
         auto range = hashTable.equal_range(rightKey);
@@ -522,8 +536,10 @@ void Join::run()
         }
       }
     }
+    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    out.print("probe phase time {} ms\n", end.count() - tmpms.count());
   }
-  milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+  end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   out.print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
 }
 //---------------------------------------------------------------------------
