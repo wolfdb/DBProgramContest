@@ -25,7 +25,7 @@ Run Harness Test
 
 TODO:
 
-[] merge join when the join condition are both sorted
+[x] merge join when the join condition are both sorted, public workload has no merge join predicate
 [] build hash table concurrently
 [] probe concurrently
 [] concurrently execute the queries

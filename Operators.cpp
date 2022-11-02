@@ -402,9 +402,11 @@ void Join::run()
   auto rightBinding = rightBindings[rightColId];
   uint64_t *leftColumn = left->getRelation(leftBinding)->columns[pInfo.left.colId];
   uint64_t *rightColumn = right->getRelation(rightBinding)->columns[pInfo.right.colId];
+  bool leftSorted = left->getRelation(leftBinding)->sorts[pInfo.left.colId] == Relation::Sorted::Likely;
+  bool rightSorted = right->getRelation(rightBinding)->sorts[pInfo.right.colId] == Relation::Sorted::Likely;
 
   // out.print("left column addr {}, right column addr {}\n", fmt::ptr(leftColumn), fmt::ptr(rightColumn));
-  out.print("leftBinding: {}, leftColId: {}, rightBinding: {}, rightColId: {}\n", leftBinding, pInfo.left.colId, rightBinding, pInfo.right.colId);
+  out.print("leftBinding: {}, leftColId: {}, left sorted: {}  rightBinding: {}, rightColId: {}, right sorted: {}\n", leftBinding, pInfo.left.colId, leftSorted, rightBinding, pInfo.right.colId, rightSorted);
 
   // If left resultSize == 1, no not need to build hash table
   if (left->resultSize == 1) {
@@ -456,6 +458,44 @@ void Join::run()
     out.print("left resultSize == 1, join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
     return;
   }
+
+#if USE_MERGE_JOIN
+  // merge join
+  if (left->isRangeResult() && right->isRangeResult() && leftSorted && rightSorted) {
+    assert(leftResults.size() == 1);
+    assert(rightResults.size() == 1);
+    uint32_t leftStart = leftResults[0][0];
+    uint32_t leftEnd = leftResults[0][1];
+    uint32_t rightStart = rightResults[0][0];
+    uint32_t rightEnd = rightResults[0][1];
+    uint32_t bt_cnt = 0;  // backtrace cnt
+    uint64_t pre = std::numeric_limits<uint64_t>::max();  // previous value
+
+    // TODO: assume both are asc ordered now, add other logic later
+    while (leftStart < leftEnd && rightStart < rightEnd) {
+      out.print("left pos: {}, value: {} right pos: {}, value: {}\n", leftStart, leftColumn[leftStart], rightStart, rightColumn[rightStart]);
+      if (leftColumn[leftStart] == rightColumn[rightStart]) {
+        copy2ResultLR(leftStart, rightStart);
+        bt_cnt ++;
+        rightStart ++;
+      } else if (leftColumn[leftStart] < rightColumn[rightStart]) {
+        pre = leftColumn[leftStart];
+        leftStart ++;
+        if (leftStart < leftEnd && leftColumn[leftStart] == pre) {
+          // backtrace
+          rightStart -= bt_cnt;
+          bt_cnt = 0;
+        }
+      } else if (leftColumn[leftStart] > rightColumn[rightStart]) {
+        rightStart ++;
+      }
+    }
+
+    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    out.print("Left result size: {}, right result size: {}, merge join result size: {} time {} ms\n", leftEnd - leftResults[0][0], rightEnd - rightResults[0][0], resultSize, end.count() - start.count());
+    return;
+  }
+#endif
 
   hashTable.reserve(left->resultSize * 2);
   if (left->isRangeResult()) {
