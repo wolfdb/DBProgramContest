@@ -30,4 +30,4 @@ TODO:
 [] probe concurrently
 [] concurrently execute the queries
 [] USE AVX512 selection to speed up filter scan
-[] split a thread to do filter scan, if the other operator return 0 result, kill the filter scan thread
+[x] split a thread to do filter scan, if the other operator return 0 result, kill the filter scan thread, this is a bad idea, will cause heap-use-after-free exception

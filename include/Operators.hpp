@@ -60,6 +60,9 @@ class Operator {
   /// Is the result from this operator are a range
   virtual bool isRangeResult() = 0;
 
+  /// Is the operator a filter scan
+  // virtual bool isFilterScan() { return false; }
+
   /// The destructor
   virtual ~Operator() {};
 };
@@ -112,6 +115,8 @@ class FilterScan : public Scan {
   FilterScan(Relation& r, FilterInfo& filterInfo) : FilterScan(r,std::vector<FilterInfo>{filterInfo}) {};
   /// Run
   void run() override;
+
+  // bool isFilterScan() override { return true; }
 
   bool isRangeResult() override { return isRange; }
 };

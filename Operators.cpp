@@ -361,6 +361,31 @@ void Join::run()
 {
   left->run();
   right->run();
+  // if (left->isFilterScan()) {
+  //   std::thread tl([this]() {
+  //     left->run();
+  //   });
+  //   right->run();
+  //   if (right->resultSize == 0) {
+  //     tl.detach();
+  //   } else {
+  //     tl.join();
+  //   }
+  // } else if (right->isFilterScan()) {
+  //   std::thread tr([this]() {
+  //     right->run();
+  //   });
+  //   left->run();
+  //   if (left->resultSize == 0) {
+  //     tr.detach();
+  //   } else {
+  //     tr.join();
+  //   }
+  // } else {
+  //   left->run();
+  //   right->run();
+  // }
+
   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   milliseconds end, tmpms;
   // Use smaller input for build
