@@ -8,7 +8,9 @@
 #include <sys/stat.h>
 #include "Relation.hpp"
 #include "Parser.hpp"
+#if PRINT_LOG
 #include "Log.hpp"
+#endif
 //---------------------------------------------------------------------------
 using namespace std;
 using namespace boost::histogram;
@@ -195,29 +197,31 @@ void Relation::buildHistogram(int idx)
 void Relation::printHistogram(int idx)
   // print histogram of column idx
 {
+#if PRINT_LOG
   if (this->sorts[idx] == Sorted::True) {
-    out.print("Max: {}, Min: {}\n", this->maxs[idx], this->mins[idx]);
-    out.print("Sorted, order: {}\n", this->orders[idx] == Order::ASC ? "ASC" : "DESC");
-    out.print("  distinct values cnt: {}\n", this->distinct_count[idx]);
+    log_print("Max: {}, Min: {}\n", this->maxs[idx], this->mins[idx]);
+    log_print("Sorted, order: {}\n", this->orders[idx] == Order::ASC ? "ASC" : "DESC");
+    log_print("  distinct values cnt: {}\n", this->distinct_count[idx]);
     // auto &h = this->histograms[idx].hist_;
     // for (auto&& x : indexed(h, coverage::all)) {
-    //   out.print("bin {} [{}, {}): {}\n", x.index(), x.bin().lower(), x.bin().upper(), *x);
+    //   log_print("bin {} [{}, {}): {}\n", x.index(), x.bin().lower(), x.bin().upper(), *x);
     // }
   } else if (this->sorts[idx] == Sorted::Likely) {
     int tmpMax = this->orders[idx] == Order::ASC ? this->maxs[idx] : this->sample_maxs[idx];
     int tmpMin = this->orders[idx] == Order::ASC ? this->sample_mins[idx] : this->mins[idx];
-    out.print("Max: {}, Min: {}\n", tmpMax, tmpMin);
-    out.print(" order: {}\n", this->orders[idx] == Order::ASC ? "ASC" : "DESC");
-    out.print("  distinct values cnt: {}\n", this->sample_distinct_count[idx]);
+    log_print("Max: {}, Min: {}\n", tmpMax, tmpMin);
+    log_print(" order: {}\n", this->orders[idx] == Order::ASC ? "ASC" : "DESC");
+    log_print("  distinct values cnt: {}\n", this->sample_distinct_count[idx]);
   } else {
-    out.print("Max: {}, Min: {}\n", this->sample_maxs[idx], this->sample_mins[idx]);
-    out.print("Unsorted\n");
-    out.print("  distinct values cnt: {}\n", this->sample_distinctVals[idx].size());
+    log_print("Max: {}, Min: {}\n", this->sample_maxs[idx], this->sample_mins[idx]);
+    log_print("Sorted: {}\n", "No");
+    log_print("  distinct values cnt: {}\n", this->sample_distinctVals[idx].size());
     // auto &h = this->sample_histograms[idx].hist_;
     // for (auto&& x : indexed(h, coverage::all)) {
-    //   out.print("bin {} [{}, {}): {}\n", x.index(), x.bin().lower(), x.bin().upper(), *x);
+    //   log_print("bin {} [{}, {}): {}\n", x.index(), x.bin().lower(), x.bin().upper(), *x);
     // }
   }
+#endif
 }
 //---------------------------------------------------------------------------
 void Relation::buildConcurrentHashMap(int idx, uint32_t start, uint32_t end)
@@ -244,7 +248,9 @@ void Relation::calThenSetEstimateCost(FilterInfo &filter)
   double fraction = 0.;
   filter.rowCount = count;
   filter.sorted = sorted == Sorted::Likely;
-  // out.print("colIdx:{}, rowCount:{}, sampleCount:{}, sample_max:{}, sample_min:{}, max:{}, min:{}\n", idx, count, scount, sample_maxs[idx], sample_mins[idx], maxs[idx], mins[idx]);
+#if PRINT_LOG
+  // log_print("colIdx:{}, rowCount:{}, sampleCount:{}, sample_max:{}, sample_min:{}, max:{}, min:{}\n", idx, count, scount, sample_maxs[idx], sample_mins[idx], maxs[idx], mins[idx]);
+#endif
   switch (filter.comparison)
   {
   case FilterInfo::Comparison::Equal:
@@ -354,7 +360,9 @@ void Relation::loadRelation(const char* fileName)
   // calculate sample count we should read
   this->calcSampleCount();
   assert(this->sampleCount == this->rowCount || this->sampleCount % DBCONTEST_PAGE_ITEM_COUNT == 0);
-  out.print("{}: sample {}/{} items for each column\n", fileName, this->sampleCount, this->rowCount);
+#if PRINT_LOG
+  log_print("{}: sample {}/{} items for each column\n", fileName, this->sampleCount, this->rowCount);
+#endif
 }
 //---------------------------------------------------------------------------
 Relation::Relation(const char* fileName) : ownsMemory(false)

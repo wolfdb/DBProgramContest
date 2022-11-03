@@ -20,6 +20,8 @@ int main(int argc, char* argv[]) {
       if (line == "Done") break;
       joiner.addRelation(line.c_str());
    }
+
+#if PRINT_LOG
    // Debug: print relation column address
    // for (int i = 0; i < joiner.relations.size(); i++) {
    //    auto &rel = joiner.relations[i];
@@ -28,6 +30,7 @@ int main(int argc, char* argv[]) {
    //       out.print("  column {} addr {}\n", j, fmt::ptr(rel.columns[j]));
    //    }
    // }
+#endif
 
    // Preparation phase (not timed)
    // Build histograms, indexes,...

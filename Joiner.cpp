@@ -30,8 +30,10 @@ void Joiner::addRelation(const char* fileName)
 void Joiner::buildHistogram()
 {
   int tmpcnt = 0;
-  out.print("max concurrency: {}\n", std::thread::hardware_concurrency());
+#if PRINT_LOG
+  log_print("max concurrency: {}\n", std::thread::hardware_concurrency());
   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+#endif
   boost::asio::thread_pool pool(std::thread::hardware_concurrency());
   for (auto &relation : relations) {
     for (int i = 0; i < relation.columns.size(); i++) {
@@ -42,11 +44,15 @@ void Joiner::buildHistogram()
     }
   }
   pool.join();
+#if PRINT_LOG
   milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  out.print("build histograms run time: {} ms\n\n", end.count() - start.count());
+  log_print("build histograms run time: {} ms\n\n", end.count() - start.count());
+#endif
   for (auto &relation : relations) {
     for (int i = 0; i < relation.columns.size(); i++) {
-      out.print("build histgram for relation: {}, column {}\n", tmpcnt, i);
+#if PRINT_LOG
+      log_print("build histgram for relation: {}, column {}\n", tmpcnt, i);
+#endif
       relation.printHistogram(i);
     }
     tmpcnt ++;
@@ -75,20 +81,26 @@ void Joiner::buildIndex(const std::vector<QueryInfo> &qq)
           boost::asio::post(pool, [&relation, colId = filterColumn.colId, start, end = start + step]() {
             relation.buildConcurrentHashMap(colId, static_cast<uint32_t>(start), static_cast<uint32_t>(end));
           });
-          out.print("build map for relation {}, column {}, range [{}, {})\n", filterColumn.relId, filterColumn.colId, start, start + step);
+#if PRINT_LOG
+          log_print("build map for relation {}, column {}, range [{}, {})\n", filterColumn.relId, filterColumn.colId, start, start + step);
+#endif
         }
         boost::asio::post(pool, [&relation, colId = filterColumn.colId, start, end = relation.rowCount]() {
           relation.buildConcurrentHashMap(colId, static_cast<uint32_t>(start), static_cast<uint32_t>(end));
         });
-        out.print("build map for relation {}, column {}, range [{}, {})\n", filterColumn.relId, filterColumn.colId, start, relation.rowCount);
+#if PRINT_LOG
+        log_print("build map for relation {}, column {}, range [{}, {})\n", filterColumn.relId, filterColumn.colId, start, relation.rowCount);
+#endif
         relation.hasHmapBuilt[filterColumn.colId] = true;
-        // out.print("hash bucket count: {} load factor {}\n", relation.columnHmap[filterColumn.colId].unsafe_bucket_count(), relation.columnHmap[filterColumn.colId].load_factor());
+        // log_print("hash bucket count: {} load factor {}\n", relation.columnHmap[filterColumn.colId].unsafe_bucket_count(), relation.columnHmap[filterColumn.colId].load_factor());
       }
     }
   }
   pool.join();
+#if PRINT_LOG
   milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  out.print("build index run time: {} ms\n\n", end.count() - start.count());
+  log_print("build index run time: {} ms\n\n", end.count() - start.count());
+#endif
 }
 //---------------------------------------------------------------------------
 Relation& Joiner::getRelation(unsigned relationId)
@@ -193,9 +205,11 @@ unique_ptr<Operator> Joiner::buildMyPlanTree(QueryInfo& query)
   for (auto &filter: query.filters) {
     auto relId = filter.filterColumn.relId;
     getRelation(relId).calThenSetEstimateCost(filter);
-    out.print("filter:{}, eCost:{}, rowCount:{}, sorted:{}\n",
+#if PRINT_LOG
+    log_print("filter:{}, eCost:{}, rowCount:{}, sorted:{}\n",
       filter.comparison == FilterInfo::Comparison::Equal ? "=" : filter.comparison == FilterInfo::Comparison::Greater ? ">" : "<",
       filter.eCost, filter.rowCount, filter.sorted);
+#endif
   }
 
   // Second for every Predicate(i.e. Join), add the operator to a PQ
@@ -211,7 +225,9 @@ unique_ptr<Operator> Joiner::buildMyPlanTree(QueryInfo& query)
   // sort the predicates
   std::sort(query.predicates.begin(), query.predicates.end(), cmp);
   for (auto &predicate : query.predicates) {
-    out.print("predicate {}, eCost:{}\n", predicate.dumpText(), predicate.eCost);
+#if PRINT_LOG
+    log_print("predicate {}, eCost:{}\n", predicate.dumpText(), predicate.eCost);
+#endif
   }
 
   // following is copied from buildPlanTree
@@ -277,8 +293,10 @@ unique_ptr<Operator> Joiner::buildMyPlanTree(QueryInfo& query)
 string Joiner::join(QueryInfo& query)
   // Executes a join query
 {
-  out.print("query {}: {}\n", Joiner::query_count++, query.dumpSQL());
+#if PRINT_LOG
+  log_print("query {}: {}\n", Joiner::query_count++, query.dumpSQL());
   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+#endif
 
   // The original left-deep tree
   // unique_ptr<Operator> root = buildPlanTree(query);
@@ -288,17 +306,19 @@ string Joiner::join(QueryInfo& query)
   Checksum checkSum(move(root),query.selections);
   checkSum.run();
 
+#if PRINT_LOG
   milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  out.print("query run time: {} ms\n\n", end.count() - start.count());
+  log_print("query run time: {} ms\n\n", end.count() - start.count());
+#endif
 
-  stringstream out;
+  stringstream ss;
   auto& results=checkSum.checkSums;
   for (unsigned i=0;i<results.size();++i) {
-    out << (checkSum.resultSize==0?"NULL":to_string(results[i]));
+    ss << (checkSum.resultSize==0?"NULL":to_string(results[i]));
     if (i<results.size()-1)
-      out << " ";
+      ss << " ";
   }
-  out << "\n";
-  return out.str();
+  ss << "\n";
+  return ss.str();
 }
 //---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ find_package(TBB COMPONENTS tbbmalloc tbbmalloc_proxy tbb_preview)
 # remove this when submit
 add_subdirectory(fmt)
 
-add_library(database Relation.cpp Operators.cpp Parser.cpp Utils.cpp Joiner.cpp Log.cpp)
+add_library(database Relation.cpp Operators.cpp Parser.cpp Utils.cpp Joiner.cpp)
 target_link_libraries(database fmt::fmt tbb)
 target_include_directories(database PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

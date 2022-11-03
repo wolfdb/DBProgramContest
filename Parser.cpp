@@ -3,7 +3,9 @@
 #include <utility>
 #include <sstream>
 #include "Parser.hpp"
+#if PRINT_LOG
 #include "Log.hpp"
+#endif
 #include "Operators.hpp"
 //---------------------------------------------------------------------------
 using namespace std;
@@ -70,12 +72,14 @@ void QueryInfo::parsePredicate(string& rawPredicate)
   } else {
     auto rightSelect = parseRelColPair(relCols[1]);
     if (leftSelect.binding == rightSelect.binding && leftSelect.colId == rightSelect.colId) {
-      out.print("removed predicate: {}\n", rawPredicate);
+#if PRINT_LOG
+      log_print("removed predicate: {}\n", rawPredicate);
+#endif
       return;
     }
     selectInfoMap[leftSelect][rightSelect.binding].insert(rightSelect);
     selectInfoMap[rightSelect][leftSelect.binding].insert(leftSelect);
-    // out.print("parsePredicate: left {}, right {}, map size {}\n", leftSelect.dumpText(), rightSelect.dumpText(), selectInfoMap.size());
+    // log_print("parsePredicate: left {}, right {}, map size {}\n", leftSelect.dumpText(), rightSelect.dumpText(), selectInfoMap.size());
   }
 }
 //---------------------------------------------------------------------------
@@ -91,25 +95,25 @@ void QueryInfo::parsePredicates(string& text)
   // resemble predicates
   for (auto &selectInfo: selectInfoMap) {
     auto left = selectInfo.first;
-    // out.print("left select: ({},{})\n", left.binding, left.colId);
+    // log_print("left select: ({},{})\n", left.binding, left.colId);
     for (auto &selectSet : selectInfo.second) {
       if (selectSet.second.size() == 1) {
         auto right = *(selectSet.second.begin());
         if (left < right) {
-          // out.print("left {},{} < right {},{}\n", left.binding, left.colId, right.binding, right.colId);
+          // log_print("left {},{} < right {},{}\n", left.binding, left.colId, right.binding, right.colId);
           predicatesSet.insert({left, right});
         } // let the other half handle to avoid duplicate
       } else {
         auto tleft = *(selectSet.second.begin());
         for (auto tright : selectSet.second) {
-          // out.print("  left select: ({},{})\n", left.binding, left.colId);
+          // log_print("  left select: ({},{})\n", left.binding, left.colId);
           if (tleft < tright) {
-            // out.print("   right select: ({},{})\n", tright.binding, tright.colId);
+            // log_print("   right select: ({},{})\n", tright.binding, tright.colId);
             predicatesSet.insert({tleft, tright});
           }
         }
         if (left < tleft) {
-          // out.print(" right select: ({},{})\n", tleft.binding, tleft.colId);
+          // log_print(" right select: ({},{})\n", tleft.binding, tleft.colId);
           predicatesSet.insert({left, tleft});
         }
       }
@@ -117,7 +121,7 @@ void QueryInfo::parsePredicates(string& text)
   }
 
   for (auto &predicate : predicatesSet) {
-    // out.print("dump: {}\n", predicate.dumpText());
+    // log_print("dump: {}\n", predicate.dumpText());
     predicates.push_back(predicate);
   }
 }
@@ -167,7 +171,9 @@ void QueryInfo::parseQuery(string& rawQuery)
   parsePredicates(queryParts[1]);
   parseSelections(queryParts[2]);
   resolveRelationIds();
-  out.print("original query: {}\nrewrite query: {}\n", rawQuery, dumpText());
+#if PRINT_LOG
+  log_print("original query: {}\nrewrite query: {}\n", rawQuery, dumpText());
+#endif
 }
 //---------------------------------------------------------------------------
 void QueryInfo::clear()

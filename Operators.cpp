@@ -7,7 +7,9 @@
 #include <boost/asio/post.hpp>
 #include "Operators.hpp"
 #include "Consts.hpp"
+#if PRINT_LOG
 #include "Log.hpp"
+#endif
 //---------------------------------------------------------------------------
 using namespace std;
 using namespace std::chrono;
@@ -15,11 +17,15 @@ using namespace std::chrono;
 void Scan::run()
   // Run
 {
+#if PRINT_LOG
   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+#endif
   resultSize=relation.rowCount;
   intermediateResults.push_back({0, static_cast<uint32_t>(relation.rowCount)});
+#if PRINT_LOG
   milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  out.print("scan resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
+  log_print("scan resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
+#endif
 }
 //---------------------------------------------------------------------------
 bool FilterScan::applyFilter(uint64_t i, const FilterInfo& f)
@@ -256,7 +262,7 @@ void FilterScan::run()
   }
 
   this->isRange = isRange;
-  // out.print("index : {}\n", fmt::join(index, ", "));
+  // log_print("index : {}\n", fmt::join(index, ", "));
   // copy the data for test now
   // if (isRange) {
   //   for (uint64_t i = index[0]; i < index[1]; i++) {
@@ -269,9 +275,10 @@ void FilterScan::run()
   // }
   this->resultSize = isRange ? index[1] - index[0] : index.size();
   this->intermediateResults.emplace_back(std::move(index));
+#if PRINT_LOG
   milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  out.print("filter scan resultSize: {}, isRange :{}, run time {} ms\n", resultSize, isRange, end.count() - start.count());
-
+  log_print("filter scan resultSize: {}, isRange :{}, run time {} ms\n", resultSize, isRange, end.count() - start.count());
+#endif
   // vector<uint64_t> idxvec;
   // vector<uint64_t> tmp2;
   // idxvec.reserve(relation.rowCount);
@@ -296,7 +303,7 @@ void FilterScan::run()
   //   }
   // }
 
-  // out.print("index2 : {}\n", fmt::join(idxvec, ", "));
+  // log_print("index2 : {}\n", fmt::join(idxvec, ", "));
 
   // for (auto i : idxvec) {
   //   copy2Result(i);
@@ -432,8 +439,10 @@ void Join::run()
   //   right->run();
   // }
 
+#if PRINT_LOG
   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   milliseconds end, tmpms;
+#endif
   // Use smaller input for build
   if (left->resultSize>right->resultSize) {
     swap(left,right);
@@ -462,8 +471,10 @@ void Join::run()
   }
 
   if (left->resultSize == 0) {
+#if PRINT_LOG
     end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-    out.print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
+    log_print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
+#endif
     return;
   }
 
@@ -476,8 +487,10 @@ void Join::run()
   bool leftSorted = left->getRelation(leftBinding)->sorts[pInfo.left.colId] == Relation::Sorted::Likely;
   bool rightSorted = right->getRelation(rightBinding)->sorts[pInfo.right.colId] == Relation::Sorted::Likely;
 
-  // out.print("left column addr {}, right column addr {}\n", fmt::ptr(leftColumn), fmt::ptr(rightColumn));
-  out.print("leftBinding: {}, leftColId: {}, left sorted: {}  rightBinding: {}, rightColId: {}, right sorted: {}\n", leftBinding, pInfo.left.colId, leftSorted, rightBinding, pInfo.right.colId, rightSorted);
+#if PRINT_LOG
+  // log_print("left column addr {}, right column addr {}\n", fmt::ptr(leftColumn), fmt::ptr(rightColumn));
+  log_print("leftBinding: {}, leftColId: {}, left sorted: {}  rightBinding: {}, rightColId: {}, right sorted: {}\n", leftBinding, pInfo.left.colId, leftSorted, rightBinding, pInfo.right.colId, rightSorted);
+#endif
 
   // If left resultSize == 1, no not need to build hash table
   if (left->resultSize == 1) {
@@ -494,7 +507,9 @@ void Join::run()
         }
       } else {
         auto rightResult = rightResults[rightColId];
-        out.print("right result size: {}\n", rightResult.size());
+#if PRINT_LOG
+        log_print("right result size: {}\n", rightResult.size());
+#endif
         for (uint32_t i = 0; i < rightResult.size(); i++) {
           if (value == rightColumn[rightResult[i]]) {
             copy2ResultL(index, i);
@@ -516,17 +531,21 @@ void Join::run()
         }
       } else {
         auto rightResult = rightResults[rightColId];
-        out.print("right result size: {}\n", rightResult.size());
+#if PRINT_LOG
+        log_print("right result size: {}\n", rightResult.size());
+#endif
         for (uint32_t i = 0; i < rightResult.size(); i++) {
           if (value == rightColumn[rightResult[i]]) {
-            copy2Result(index, i);
+            copy2Result(0, i);
           }
         }
       }
     }
 
+#if PRINT_LOG
     end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-    out.print("left resultSize == 1, join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
+    log_print("left resultSize == 1, join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
+#endif
     return;
   }
 
@@ -544,7 +563,9 @@ void Join::run()
 
     // TODO: assume both are asc ordered now, add other logic later
     while (leftStart < leftEnd && rightStart < rightEnd) {
-      out.print("left pos: {}, value: {} right pos: {}, value: {}\n", leftStart, leftColumn[leftStart], rightStart, rightColumn[rightStart]);
+#if PRINT_LOG
+      log_print("left pos: {}, value: {} right pos: {}, value: {}\n", leftStart, leftColumn[leftStart], rightStart, rightColumn[rightStart]);
+#endif
       if (leftColumn[leftStart] == rightColumn[rightStart]) {
         copy2ResultLR(leftStart, rightStart);
         bt_cnt ++;
@@ -562,8 +583,10 @@ void Join::run()
       }
     }
 
+#if PRINT_LOG
     end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-    out.print("Left result size: {}, right result size: {}, merge join result size: {} time {} ms\n", leftEnd - leftResults[0][0], rightEnd - rightResults[0][0], resultSize, end.count() - start.count());
+    log_print("Left result size: {}, right result size: {}, merge join result size: {} time {} ms\n", leftEnd - leftResults[0][0], rightEnd - rightResults[0][0], resultSize, end.count() - start.count());
+#endif
     return;
   }
 #endif
@@ -571,26 +594,32 @@ void Join::run()
   hashTable.reserve(left->resultSize * 2);
   if (left->isRangeResult()) {
     // Build phase
+#if PRINT_LOG
     tmpms = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+#endif
     assert(leftResults.size() == 1);
     auto &leftResult = leftResults[0];
-    // out.print("range [{}, {})\n", leftResult[0], leftResult[1]);
+    // log_print("range [{}, {})\n", leftResult[0], leftResult[1]);
     for (uint32_t i = leftResult[0]; i < leftResult[1]; i++) {
       // simd ?
       // if (leftBinding == 2) {
-      //   out.print(" emplace {}, {}\n", leftColumn[i], i);
+      //   log_print(" emplace {}, {}\n", leftColumn[i], i);
       // }
-      // out.print(" emplace {}, {}\n", leftColumn[i], i);
+      // log_print(" emplace {}, {}\n", leftColumn[i], i);
       hashTable.emplace(leftColumn[i], i);
     }
+#if PRINT_LOG
     end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-    out.print("Left result size: {}, is range: true, build hashmap time {} ms\n", leftResult[1] - leftResult[0], end.count() - tmpms.count());
+    log_print("Left result size: {}, is range: true, build hashmap time {} ms\n", leftResult[1] - leftResult[0], end.count() - tmpms.count());
     tmpms = end;
+#endif
     // Probe phase
     if (right->isRangeResult()) {
       assert(rightResults.size() == 1);
       auto &rightResult = rightResults[0];
-      out.print("right result size: {}, is range: true\n", rightResult[1] - rightResult[0]);
+#if PRINT_LOG
+      log_print("right result size: {}, is range: true\n", rightResult[1] - rightResult[0]);
+#endif
 #if USE_PARALLEL_PROBE
       if (rightResult[1] - rightResult[0] > (MIN_PROBE_ITEM_CNT << 1)) {
         uint32_t task_cnt = (rightResult[1] - rightResult[0]) / MIN_PROBE_ITEM_CNT;
@@ -603,7 +632,9 @@ void Join::run()
         std::vector<std::future<size_t>> vf;
         while (start < rightResult[1]) {
           taskid ++;
-          out.print("split task {} for the probe, start: {}\n", taskid, start);
+#if PRINT_LOG
+          log_print("split task {} for the probe, start: {}\n", taskid, start);
+#endif
           if (start + step >= rightResult[1]) {
             vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
               for (uint32_t i = start; i < end; i++) {
@@ -640,12 +671,14 @@ void Join::run()
         size_t pcnt = 0;
         for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
           pcnt += x.get();
-          // out.print("subtasks probe get {} results\n", pcnt);
+          // log_print("subtasks probe get {} results\n", pcnt);
         });
         resultSize += pcnt;
+#if PRINT_LOG
         // end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-        // out.print("before merge time {} ms, intermediate cnt: {}\n", end.count() - tmpms.count(), intermediateResults[0].size());
+        // log_print("before merge time {} ms, intermediate cnt: {}\n", end.count() - tmpms.count(), intermediateResults[0].size());
         // tmpms = end;
+#endif
         // merge the results
         for (int i = 0; i < intermediateResults.size(); i++) {
           for (int j = 1; j < parallelResults.size(); j++) {
@@ -670,11 +703,15 @@ void Join::run()
         }
       }
 #endif
+#if PRINT_LOG
       end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-      out.print("probe phase time {} ms\n", end.count() - tmpms.count());
+      log_print("probe phase time {} ms\n", end.count() - tmpms.count());
+#endif
     } else {  // right range: false
       auto &rightResult = rightResults[rightColId];
-      out.print("right result size: {}, is range: false\n", rightResult.size());
+#if PRINT_LOG
+      log_print("right result size: {}, is range: false\n", rightResult.size());
+#endif
 #if USE_PARALLEL_PROBE
       if (rightResult.size() > (MIN_PROBE_ITEM_CNT << 1)) {
         uint32_t task_cnt = rightResult.size() / MIN_PROBE_ITEM_CNT;
@@ -687,7 +724,9 @@ void Join::run()
         std::vector<std::future<size_t>> vf;
         while (start < rightResult.size()) {
           taskid ++;
-          out.print("split task {} for the probe, start: {}\n", taskid, start);
+#if PRINT_LOG
+          log_print("split task {} for the probe, start: {}\n", taskid, start);
+#endif
           if (start + step >= rightResult.size()) {
             vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
               for (uint32_t i = start; i < end; i++) {
@@ -724,12 +763,14 @@ void Join::run()
         size_t pcnt = 0;
         for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
           pcnt += x.get();
-          // out.print("subtasks probe get {} results\n", pcnt);
+          // log_print("subtasks probe get {} results\n", pcnt);
         });
         resultSize += pcnt;
+#if PRINT_LOG
         // end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-        // out.print("before merge time {} ms, intermediate cnt: {}\n", end.count() - tmpms.count(), intermediateResults[0].size());
+        // log_print("before merge time {} ms, intermediate cnt: {}\n", end.count() - tmpms.count(), intermediateResults[0].size());
         // tmpms = end;
+#endif
         // merge the results
         for (int i = 0; i < intermediateResults.size(); i++) {
           for (int j = 1; j < parallelResults.size(); j++) {
@@ -739,10 +780,10 @@ void Join::run()
       } else {
         for (uint32_t i = 0; i < rightResult.size(); i++) {
           auto rightKey = rightColumn[rightResult[i]];
-          // out.print("  rightKey: {}\n", rightKey);
+          // log_print("  rightKey: {}\n", rightKey);
           auto range = hashTable.equal_range(rightKey);
           for (auto iter = range.first; iter != range.second; ++iter) {
-            // out.print("  hash key {}, copy {}, {}\n", iter->first, iter->second, i);
+            // log_print("  hash key {}, copy {}, {}\n", iter->first, iter->second, i);
             copy2ResultL(iter->second, i);
           }
         }
@@ -750,33 +791,41 @@ void Join::run()
 #else
       for (uint32_t i = 0; i < rightResult.size(); i++) {
         auto rightKey = rightColumn[rightResult[i]];
-        // out.print("  rightKey: {}\n", rightKey);
+        // log_print("  rightKey: {}\n", rightKey);
         auto range = hashTable.equal_range(rightKey);
         for (auto iter = range.first; iter != range.second; ++iter) {
-          // out.print("  hash key {}, copy {}, {}\n", iter->first, iter->second, i);
+          // log_print("  hash key {}, copy {}, {}\n", iter->first, iter->second, i);
           copy2ResultL(iter->second, i);
         }
       }
 #endif
+#if PRINT_LOG
       end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-      out.print("probe phase time {} ms\n", end.count() - tmpms.count());
+      log_print("probe phase time {} ms\n", end.count() - tmpms.count());
+#endif
     }
   } else {  // left range: false
     // Build phase
+#if PRINT_LOG
     tmpms = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+#endif
     auto leftResult = leftResults[leftColId];
     for (uint32_t i = 0; i < leftResult.size(); i++) {
       // multi threads
       hashTable.emplace(leftColumn[leftResult[i]], i);
     }
+#if PRINT_LOG
     end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-    out.print("Left result size: {}, is range: false, build hashmap time {} ms\n", leftResult.size(), end.count() - tmpms.count());
+    log_print("Left result size: {}, is range: false, build hashmap time {} ms\n", leftResult.size(), end.count() - tmpms.count());
     tmpms = end;
+#endif
     // Probe phase
     if (right->isRangeResult()) {
       assert(rightResults.size() == 1);
       auto &rightResult = rightResults[0];
-      out.print("right result size: {}, is range: true\n", rightResult[1] - rightResult[0]);
+#if PRINT_LOG
+      log_print("right result size: {}, is range: true\n", rightResult[1] - rightResult[0]);
+#endif
 #if USE_PARALLEL_PROBE
       if (rightResult[1] - rightResult[0] > (MIN_PROBE_ITEM_CNT << 1)) {
         uint32_t task_cnt = (rightResult[1] - rightResult[0]) / MIN_PROBE_ITEM_CNT;
@@ -789,7 +838,9 @@ void Join::run()
         std::vector<std::future<size_t>> vf;
         while (start < rightResult[1]) {
           taskid ++;
-          out.print("split task {} for the probe, start: {}\n", taskid, start);
+#if PRINT_LOG
+          log_print("split task {} for the probe, start: {}\n", taskid, start);
+#endif
           if (start + step >= rightResult[1]) {
             vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
               for (uint32_t i = start; i < end; i++) {
@@ -826,12 +877,14 @@ void Join::run()
         size_t pcnt = 0;
         for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
           pcnt += x.get();
-          // out.print("subtasks probe get {} results\n", pcnt);
+          // log_print("subtasks probe get {} results\n", pcnt);
         });
         resultSize += pcnt;
+#if PRINT_LOG
         // end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-        // out.print("before merge time {} ms, intermediate cnt: {}\n", end.count() - tmpms.count(), intermediateResults[0].size());
+        // log_print("before merge time {} ms, intermediate cnt: {}\n", end.count() - tmpms.count(), intermediateResults[0].size());
         // tmpms = end;
+#endif
         // merge the results
         for (int i = 0; i < intermediateResults.size(); i++) {
           for (int j = 1; j < parallelResults.size(); j++) {
@@ -858,7 +911,9 @@ void Join::run()
 #endif
     } else {
       auto &rightResult = rightResults[rightColId];
-      out.print("right result size: {}, is range: false\n", rightResult.size());
+#if PRINT_LOG
+      log_print("right result size: {}, is range: false\n", rightResult.size());
+#endif
 #if USE_PARALLEL_PROBE
       if (rightResult.size() > (MIN_PROBE_ITEM_CNT << 1)) {
         uint32_t task_cnt = rightResult.size() / MIN_PROBE_ITEM_CNT;
@@ -871,7 +926,9 @@ void Join::run()
         std::vector<std::future<size_t>> vf;
         while (start < rightResult.size()) {
           taskid ++;
-          out.print("split task {} for the probe, start: {}\n", taskid, start);
+#if PRINT_LOG
+          log_print("split task {} for the probe, start: {}\n", taskid, start);
+#endif
           if (start + step >= rightResult.size()) {
             vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
               for (uint32_t i = start; i < end; i++) {
@@ -908,12 +965,14 @@ void Join::run()
         size_t pcnt = 0;
         for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
           pcnt += x.get();
-          // out.print("subtasks probe get {} results\n", pcnt);
+          // log_print("subtasks probe get {} results\n", pcnt);
         });
         resultSize += pcnt;
+#if PRINT_LOG
         // end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-        // out.print("before merge time {} ms, intermediate cnt: {}\n", end.count() - tmpms.count(), intermediateResults[0].size());
+        // log_print("before merge time {} ms, intermediate cnt: {}\n", end.count() - tmpms.count(), intermediateResults[0].size());
         // tmpms = end;
+#endif
         // merge the results
         for (int i = 0; i < intermediateResults.size(); i++) {
           for (int j = 1; j < parallelResults.size(); j++) {
@@ -939,11 +998,15 @@ void Join::run()
       }
 #endif
     }
+#if PRINT_LOG
     end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-    out.print("probe phase time {} ms\n", end.count() - tmpms.count());
+    log_print("probe phase time {} ms\n", end.count() - tmpms.count());
+#endif
   }
+#if PRINT_LOG
   end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  out.print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
+  log_print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
+#endif
 }
 //---------------------------------------------------------------------------
 void SelfJoin::copy2Result(uint32_t id)
@@ -985,22 +1048,27 @@ void SelfJoin::run()
         copy2Result(i);
     }
   }
-
+#if PRINT_LOG
   milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  out.print("self join resultSize: {}, isRange: {}, run time {} ms\n", resultSize, input->isRangeResult(), end.count() - start.count());
+  log_print("self join resultSize: {}, isRange: {}, run time {} ms\n", resultSize, input->isRangeResult(), end.count() - start.count());
+#endif
 }
 //---------------------------------------------------------------------------
 void Checksum::run()
   // Run
 {
   input->run();
+#if PRINT_LOG
   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+#endif
   auto &results = input->getResults();
   resultSize = input->resultSize;
   if (resultSize == 0) {
     checkSums.resize(colInfo.size());
+#if PRINT_LOG
     milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-    out.print("checksum result size {}, is range: {}, run time {} ms\n", resultSize,input->isRangeResult(), end.count() - start.count());
+    log_print("checksum result size {}, is range: {}, run time {} ms\n", resultSize,input->isRangeResult(), end.count() - start.count());
+#endif
     return;
   }
 
@@ -1025,7 +1093,7 @@ void Checksum::run()
       auto colId = input->resolve(sInfo);
       auto &resulti = results[colId];
       uint64_t *column = input->getRelation(sInfo.binding)->columns[sInfo.colId];
-      // out.print("result size num: {}, column addr: {}, colId: {}\n", results[0].size(), fmt::ptr(column), colId);
+      // log_print("result size num: {}, column addr: {}, colId: {}\n", results[0].size(), fmt::ptr(column), colId);
 
       boost::asio::post(pool, [&sInfo, &resulti, column, this]() {
         uint64_t sum = 0;
@@ -1041,7 +1109,9 @@ void Checksum::run()
       checkSums.push_back(sumsCache[sInfo]);
     }
   }
+#if PRINT_LOG
   milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  out.print("checksum result size {}, is range: {}, run time {} ms\n", resultSize,input->isRangeResult(), end.count() - start.count());
+  log_print("checksum result size {}, is range: {}, run time {} ms\n", resultSize,input->isRangeResult(), end.count() - start.count());
+#endif
 }
 //---------------------------------------------------------------------------
