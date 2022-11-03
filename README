@@ -26,7 +26,7 @@ Run Harness Test
 TODO:
 
 [x] merge join when the join condition are both sorted, public workload has no merge join predicate
-[] build hash table concurrently
+[x] build hash table concurrently, using oneapi::tbb::concurrent_unordered_multimap is very time consuming, this is a bad idea
 [] probe concurrently
 [x] concurrently execute the queries, use async to do the job
 [] USE AVX512 selection to speed up filter scan
