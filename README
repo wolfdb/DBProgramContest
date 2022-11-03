@@ -5,7 +5,7 @@ This file must contain information about the submission, including:
 Use docker to build and run the test.
 ```
 docker build -t dbtest .
-docker run -v $(pwd):/home/contest/dbtest -d -it --name=dbtest dbtest bash
+docker run --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -v $(pwd):/home/contest/dbtest -d -it --name=dbtest dbtest bash
 docker exec -it dbtest bash
 ```
 

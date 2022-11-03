@@ -21,10 +21,10 @@ RUN apt-get install -y clang
 RUN apt-get install -y libtbb-dev
 RUN apt-get install -y git
 RUN apt-get install -y gdb
-RUN apt-get install linux-tools
+RUN apt-get install -y linux-tools-generic
 
 
 # Change user.
-USER contest
+USER root
 
 WORKDIR /home/contest/dbtest
