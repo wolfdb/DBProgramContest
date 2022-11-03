@@ -27,7 +27,7 @@ TODO:
 
 [x] merge join when the join condition are both sorted, public workload has no merge join predicate
 [x] build hash table concurrently, using oneapi::tbb::concurrent_unordered_multimap is very time consuming, this is a bad idea
-[] probe concurrently
+[x] probe concurrently, this is really a improvement
 [x] concurrently execute the queries, use async to do the job
 [] USE AVX512 selection to speed up filter scan
 [x] split a thread to do filter scan, if the other operator return 0 result, kill the filter scan thread, this is a bad idea, will cause heap-use-after-free exception

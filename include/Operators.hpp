@@ -131,9 +131,13 @@ class Join : public Operator {
   PredicateInfo& pInfo;
   /// Copy tuple to result
   void copy2ResultLR(uint32_t leftId, uint32_t rightId);
+  void copy2ResultLRP(std::vector<std::vector<uint32_t>> &result, uint32_t leftId, uint32_t rightId);
   void copy2ResultL(uint32_t leftId, uint32_t rightId);
+  void copy2ResultLP(std::vector<std::vector<uint32_t>> &result, uint32_t leftId, uint32_t rightId);
   void copy2ResultR(uint32_t leftId, uint32_t rightId);
+  void copy2ResultRP(std::vector<std::vector<uint32_t>> &result, uint32_t leftId, uint32_t rightId);
   void copy2Result(uint32_t leftId, uint32_t rightId);
+  void copy2ResultP(std::vector<std::vector<uint32_t>> &result, uint32_t leftId, uint32_t rightId);
   /// Create mapping for bindings
   void createMappingForBindings();
 

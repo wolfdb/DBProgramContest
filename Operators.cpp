@@ -320,6 +320,12 @@ void Join::copy2ResultLR(uint32_t leftId, uint32_t rightId)
   intermediateResults[1].push_back(rightId);
   ++ resultSize;
 }
+void Join::copy2ResultLRP(std::vector<std::vector<uint32_t>> &result, uint32_t leftId, uint32_t rightId)
+{
+  assert(result.size() == 2);
+  result[0].push_back(leftId);
+  result[1].push_back(rightId);
+}
 void Join::copy2ResultL(uint32_t leftId, uint32_t rightId)
 {
   auto &rightResults = right->getResults();
@@ -330,6 +336,15 @@ void Join::copy2ResultL(uint32_t leftId, uint32_t rightId)
   }
   ++ resultSize;
 }
+void Join::copy2ResultLP(std::vector<std::vector<uint32_t>> &result, uint32_t leftId, uint32_t rightId)
+{
+  auto &rightResults = right->getResults();
+  result[0].push_back(leftId);
+  unsigned index = 1;
+  for (unsigned cId = 0; cId < rightResults.size(); ++cId) {
+    result[index++].push_back(rightResults[cId][rightId]);
+  }
+}
 void Join::copy2ResultR(uint32_t leftId, uint32_t rightId)
 {
   auto &leftResults = left->getResults();
@@ -339,6 +354,15 @@ void Join::copy2ResultR(uint32_t leftId, uint32_t rightId)
   }
   intermediateResults[index].push_back(rightId);
   ++ resultSize;
+}
+void Join::copy2ResultRP(std::vector<std::vector<uint32_t>> &result, uint32_t leftId, uint32_t rightId)
+{
+  auto &leftResults = left->getResults();
+  unsigned index = 0;
+  for (unsigned cId = 0; cId < leftResults.size(); ++cId) {
+    result[index++].push_back(leftResults[cId][leftId]);
+  }
+  result[index].push_back(rightId);
 }
 void Join::copy2Result(uint32_t leftId, uint32_t rightId)
   // Copy to result
@@ -355,6 +379,21 @@ void Join::copy2Result(uint32_t leftId, uint32_t rightId)
     intermediateResults[index++].push_back(rightResults[cId][rightId]);
   }
   ++resultSize;
+}
+void Join::copy2ResultP(std::vector<std::vector<uint32_t>> &result, uint32_t leftId, uint32_t rightId)
+  // Copy to result
+{
+  auto &leftResults = left->getResults();
+  auto &rightResults = right->getResults();
+  unsigned index=0;
+
+  for (unsigned cId = 0; cId < leftResults.size(); ++cId) {
+    result[index++].push_back(leftResults[cId][leftId]);
+  }
+
+  for (unsigned cId = 0; cId < rightResults.size(); ++cId) {
+    result[index++].push_back(rightResults[cId][rightId]);
+  }
 }
 //---------------------------------------------------------------------------
 void Join::run()
@@ -552,6 +591,77 @@ void Join::run()
       assert(rightResults.size() == 1);
       auto &rightResult = rightResults[0];
       out.print("right result size: {}, is range: true\n", rightResult[1] - rightResult[0]);
+#if USE_PARALLEL_PROBE
+      if (rightResult[1] - rightResult[0] > (MIN_PROBE_ITEM_CNT << 1)) {
+        uint32_t task_cnt = (rightResult[1] - rightResult[0]) / MIN_PROBE_ITEM_CNT;
+        task_cnt = std::min(task_cnt, MAX_PROBE_TASK_CNT);
+        size_t step = (rightResult[1] - rightResult[0] + task_cnt - 1) / task_cnt;
+        size_t start = rightResult[0] + step;
+        int taskid = 0;
+        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(task_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
+
+        std::vector<std::future<size_t>> vf;
+        while (start < rightResult[1]) {
+          taskid ++;
+          out.print("split task {} for the probe, start: {}\n", taskid, start);
+          if (start + step >= rightResult[1]) {
+            vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
+              for (uint32_t i = start; i < end; i++) {
+                auto rightKey = rightColumn[i];
+                auto range = hashTable.equal_range(rightKey);
+                for (auto iter = range.first; iter != range.second; ++iter) {
+                  copy2ResultLRP(results, iter->second, i);
+                }
+              }
+              return results[0].size();
+            }));
+            break;
+          }
+          vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, start, end = start + step]() {
+            for (uint32_t i = start; i < end; i++) {
+              auto rightKey = rightColumn[i];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultLRP(results, iter->second, i);
+              }
+            }
+            return results[0].size();
+          }));
+          start += step;
+        }
+        for (uint32_t i = rightResult[0]; i < rightResult[0] + step; i++) {
+          auto rightKey = rightColumn[i];
+          auto range = hashTable.equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultLR(iter->second, i);
+          }
+        }
+        // wait for the results
+        size_t pcnt = 0;
+        for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+          pcnt += x.get();
+          // out.print("subtasks probe get {} results\n", pcnt);
+        });
+        resultSize += pcnt;
+        // end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+        // out.print("before merge time {} ms, intermediate cnt: {}\n", end.count() - tmpms.count(), intermediateResults[0].size());
+        // tmpms = end;
+        // merge the results
+        for (int i = 0; i < intermediateResults.size(); i++) {
+          for (int j = 1; j < parallelResults.size(); j++) {
+            intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
+          }
+        }
+      } else {
+        for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
+          auto rightKey = rightColumn[i];
+          auto range = hashTable.equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultLR(iter->second, i);
+          }
+        }
+      }
+#else
       for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
         auto rightKey = rightColumn[i];
         auto range = hashTable.equal_range(rightKey);
@@ -559,9 +669,85 @@ void Join::run()
           copy2ResultLR(iter->second, i);
         }
       }
-    } else {
+#endif
+      end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+      out.print("probe phase time {} ms\n", end.count() - tmpms.count());
+    } else {  // right range: false
       auto &rightResult = rightResults[rightColId];
       out.print("right result size: {}, is range: false\n", rightResult.size());
+#if USE_PARALLEL_PROBE
+      if (rightResult.size() > (MIN_PROBE_ITEM_CNT << 1)) {
+        uint32_t task_cnt = rightResult.size() / MIN_PROBE_ITEM_CNT;
+        task_cnt = std::min(task_cnt, MAX_PROBE_TASK_CNT);
+        size_t step = (rightResult.size() + task_cnt - 1) / task_cnt;
+        size_t start = step;
+        int taskid = 0;
+        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(task_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
+
+        std::vector<std::future<size_t>> vf;
+        while (start < rightResult.size()) {
+          taskid ++;
+          out.print("split task {} for the probe, start: {}\n", taskid, start);
+          if (start + step >= rightResult.size()) {
+            vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
+              for (uint32_t i = start; i < end; i++) {
+                auto rightKey = rightColumn[rightResult[i]];
+                auto range = hashTable.equal_range(rightKey);
+                for (auto iter = range.first; iter != range.second; ++iter) {
+                  copy2ResultLP(results, iter->second, i);
+                }
+              }
+              return results[0].size();
+            }));
+            break;
+          }
+          vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = start + step]() {
+            for (uint32_t i = start; i < end; i++) {
+              auto rightKey = rightColumn[rightResult[i]];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultLP(results, iter->second, i);
+              }
+            }
+            return results[0].size();
+          }));
+          start += step;
+        }
+        for (uint32_t i = 0; i < step; i++) {
+          auto rightKey = rightColumn[rightResult[i]];
+          auto range = hashTable.equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultL(iter->second, i);
+          }
+        }
+        // wait for the results
+        size_t pcnt = 0;
+        for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+          pcnt += x.get();
+          // out.print("subtasks probe get {} results\n", pcnt);
+        });
+        resultSize += pcnt;
+        // end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+        // out.print("before merge time {} ms, intermediate cnt: {}\n", end.count() - tmpms.count(), intermediateResults[0].size());
+        // tmpms = end;
+        // merge the results
+        for (int i = 0; i < intermediateResults.size(); i++) {
+          for (int j = 1; j < parallelResults.size(); j++) {
+            intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
+          }
+        }
+      } else {
+        for (uint32_t i = 0; i < rightResult.size(); i++) {
+          auto rightKey = rightColumn[rightResult[i]];
+          // out.print("  rightKey: {}\n", rightKey);
+          auto range = hashTable.equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            // out.print("  hash key {}, copy {}, {}\n", iter->first, iter->second, i);
+            copy2ResultL(iter->second, i);
+          }
+        }
+      }
+#else
       for (uint32_t i = 0; i < rightResult.size(); i++) {
         auto rightKey = rightColumn[rightResult[i]];
         // out.print("  rightKey: {}\n", rightKey);
@@ -571,10 +757,11 @@ void Join::run()
           copy2ResultL(iter->second, i);
         }
       }
+#endif
+      end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+      out.print("probe phase time {} ms\n", end.count() - tmpms.count());
     }
-    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-    out.print("probe phase time {} ms\n", end.count() - tmpms.count());
-  } else {
+  } else {  // left range: false
     // Build phase
     tmpms = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
     auto leftResult = leftResults[leftColId];
@@ -590,6 +777,77 @@ void Join::run()
       assert(rightResults.size() == 1);
       auto &rightResult = rightResults[0];
       out.print("right result size: {}, is range: true\n", rightResult[1] - rightResult[0]);
+#if USE_PARALLEL_PROBE
+      if (rightResult[1] - rightResult[0] > (MIN_PROBE_ITEM_CNT << 1)) {
+        uint32_t task_cnt = (rightResult[1] - rightResult[0]) / MIN_PROBE_ITEM_CNT;
+        task_cnt = std::min(task_cnt, MAX_PROBE_TASK_CNT);
+        size_t step = (rightResult[1] - rightResult[0] + task_cnt - 1) / task_cnt;
+        size_t start = rightResult[0] + step;
+        int taskid = 0;
+        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(task_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
+
+        std::vector<std::future<size_t>> vf;
+        while (start < rightResult[1]) {
+          taskid ++;
+          out.print("split task {} for the probe, start: {}\n", taskid, start);
+          if (start + step >= rightResult[1]) {
+            vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
+              for (uint32_t i = start; i < end; i++) {
+                auto rightKey = rightColumn[i];
+                auto range = hashTable.equal_range(rightKey);
+                for (auto iter = range.first; iter != range.second; ++iter) {
+                  copy2ResultRP(results, iter->second, i);
+                }
+              }
+              return results[0].size();
+            }));
+            break;
+          }
+          vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, start, end = start + step]() {
+            for (uint32_t i = start; i < end; i++) {
+              auto rightKey = rightColumn[i];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultRP(results, iter->second, i);
+              }
+            }
+            return results[0].size();
+          }));
+          start += step;
+        }
+        for (uint32_t i = rightResult[0]; i < rightResult[0] + step; i++) {
+          auto rightKey = rightColumn[i];
+          auto range = hashTable.equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultR(iter->second, i);
+          }
+        }
+        // wait for the results
+        size_t pcnt = 0;
+        for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+          pcnt += x.get();
+          // out.print("subtasks probe get {} results\n", pcnt);
+        });
+        resultSize += pcnt;
+        // end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+        // out.print("before merge time {} ms, intermediate cnt: {}\n", end.count() - tmpms.count(), intermediateResults[0].size());
+        // tmpms = end;
+        // merge the results
+        for (int i = 0; i < intermediateResults.size(); i++) {
+          for (int j = 1; j < parallelResults.size(); j++) {
+            intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
+          }
+        }
+      } else {
+        for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
+          auto rightKey = rightColumn[i];
+          auto range = hashTable.equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultR(iter->second, i);
+          }
+        }
+      }
+#else
       for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
         auto rightKey = rightColumn[i];
         auto range = hashTable.equal_range(rightKey);
@@ -597,9 +855,81 @@ void Join::run()
           copy2ResultR(iter->second, i);
         }
       }
+#endif
     } else {
       auto &rightResult = rightResults[rightColId];
       out.print("right result size: {}, is range: false\n", rightResult.size());
+#if USE_PARALLEL_PROBE
+      if (rightResult.size() > (MIN_PROBE_ITEM_CNT << 1)) {
+        uint32_t task_cnt = rightResult.size() / MIN_PROBE_ITEM_CNT;
+        task_cnt = std::min(task_cnt, MAX_PROBE_TASK_CNT);
+        size_t step = (rightResult.size() + task_cnt - 1) / task_cnt;
+        size_t start = step;
+        int taskid = 0;
+        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(task_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
+
+        std::vector<std::future<size_t>> vf;
+        while (start < rightResult.size()) {
+          taskid ++;
+          out.print("split task {} for the probe, start: {}\n", taskid, start);
+          if (start + step >= rightResult.size()) {
+            vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
+              for (uint32_t i = start; i < end; i++) {
+                auto rightKey = rightColumn[rightResult[i]];
+                auto range = hashTable.equal_range(rightKey);
+                for (auto iter = range.first; iter != range.second; ++iter) {
+                  copy2ResultP(results, iter->second, i);
+                }
+              }
+              return results[0].size();
+            }));
+            break;
+          }
+          vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = start + step]() {
+            for (uint32_t i = start; i < end; i++) {
+              auto rightKey = rightColumn[rightResult[i]];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultP(results, iter->second, i);
+              }
+            }
+            return results[0].size();
+          }));
+          start += step;
+        }
+        for (uint32_t i = 0; i < step; i++) {
+          auto rightKey = rightColumn[rightResult[i]];
+          auto range = hashTable.equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2Result(iter->second, i);
+          }
+        }
+        // wait for the results
+        size_t pcnt = 0;
+        for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+          pcnt += x.get();
+          // out.print("subtasks probe get {} results\n", pcnt);
+        });
+        resultSize += pcnt;
+        // end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+        // out.print("before merge time {} ms, intermediate cnt: {}\n", end.count() - tmpms.count(), intermediateResults[0].size());
+        // tmpms = end;
+        // merge the results
+        for (int i = 0; i < intermediateResults.size(); i++) {
+          for (int j = 1; j < parallelResults.size(); j++) {
+            intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
+          }
+        }
+      } else {
+        for (uint32_t i = 0; i < rightResult.size(); i++) {
+          auto rightKey = rightColumn[rightResult[i]];
+          auto range = hashTable.equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2Result(iter->second, i);
+          }
+        }
+      }
+#else
       for (uint32_t i = 0; i < rightResult.size(); i++) {
         auto rightKey = rightColumn[rightResult[i]];
         auto range = hashTable.equal_range(rightKey);
@@ -607,6 +937,7 @@ void Join::run()
           copy2Result(iter->second, i);
         }
       }
+#endif
     }
     end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
     out.print("probe phase time {} ms\n", end.count() - tmpms.count());
