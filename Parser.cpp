@@ -178,6 +178,7 @@ void QueryInfo::clear()
   filters.clear();
   selections.clear();
   selectInfoMap.clear();
+  predicatesSet.clear();
 }
 //---------------------------------------------------------------------------
 static string wrapRelationName(uint64_t id)

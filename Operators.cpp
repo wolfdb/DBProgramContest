@@ -2,6 +2,7 @@
 #include <iostream>
 #include <queue>
 #include <algorithm>
+#include <future>
 #include <boost/asio/thread_pool.hpp>
 #include <boost/asio/post.hpp>
 #include "Operators.hpp"
@@ -359,8 +360,14 @@ void Join::copy2Result(uint32_t leftId, uint32_t rightId)
 void Join::run()
   // Run
 {
+#if USE_ASYNC_JOIN
+  auto al = std::async([this]() { left->run(); });
+  right->run();
+  al.get();
+#else
   left->run();
   right->run();
+#endif
   // if (left->isFilterScan()) {
   //   std::thread tl([this]() {
   //     left->run();

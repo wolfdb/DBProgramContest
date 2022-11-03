@@ -26,3 +26,7 @@
 #define SUM_CACHE_MAX_POOL_SIZE 4
 
 #define USE_MERGE_JOIN 0
+
+#define USE_ASYNC_JOIN 0
+
+#define USE_PARALLEL_QUERY 0
