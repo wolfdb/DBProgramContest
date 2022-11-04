@@ -47,7 +47,7 @@ int main(int argc, char* argv[]) {
          for (auto it = qq.begin(); it < qq.end(); it++) {
             // std::unique_ptr<QueryInfoWrapper> iw = std::move(*it);
             // cout << joiner.join(iw->query);
-            vf.push_back(async([&joiner, iw = std::move(*it)]() {
+            vf.push_back(async(std::launch::async , [&joiner, iw = std::move(*it)]() {
                return joiner.join(iw->query);
             }));
          }

@@ -407,7 +407,7 @@ void Join::run()
   // Run
 {
 #if USE_ASYNC_JOIN
-  auto al = std::async([this]() { left->run(); });
+  auto al = std::async(std::launch::async , [this]() { left->run(); });
   right->run();
   al.get();
 #else
@@ -636,7 +636,7 @@ void Join::run()
           log_print("split task {} for the probe, start: {}\n", taskid, start);
 #endif
           if (start + step >= rightResult[1]) {
-            vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
+            vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
               for (uint32_t i = start; i < end; i++) {
                 auto rightKey = rightColumn[i];
                 auto range = hashTable.equal_range(rightKey);
@@ -648,7 +648,7 @@ void Join::run()
             }));
             break;
           }
-          vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, start, end = start + step]() {
+          vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, start, end = start + step]() {
             for (uint32_t i = start; i < end; i++) {
               auto rightKey = rightColumn[i];
               auto range = hashTable.equal_range(rightKey);
@@ -729,7 +729,7 @@ void Join::run()
           log_print("split task {} for the probe, start: {}\n", taskid, start);
 #endif
           if (start + step >= rightResult.size()) {
-            vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
+            vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
               for (uint32_t i = start; i < end; i++) {
                 auto rightKey = rightColumn[rightResult[i]];
                 auto range = hashTable.equal_range(rightKey);
@@ -741,7 +741,7 @@ void Join::run()
             }));
             break;
           }
-          vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = start + step]() {
+          vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = start + step]() {
             for (uint32_t i = start; i < end; i++) {
               auto rightKey = rightColumn[rightResult[i]];
               auto range = hashTable.equal_range(rightKey);
@@ -844,7 +844,7 @@ void Join::run()
           log_print("split task {} for the probe, start: {}\n", taskid, start);
 #endif
           if (start + step >= rightResult[1]) {
-            vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
+            vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
               for (uint32_t i = start; i < end; i++) {
                 auto rightKey = rightColumn[i];
                 auto range = hashTable.equal_range(rightKey);
@@ -856,7 +856,7 @@ void Join::run()
             }));
             break;
           }
-          vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, start, end = start + step]() {
+          vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, start, end = start + step]() {
             for (uint32_t i = start; i < end; i++) {
               auto rightKey = rightColumn[i];
               auto range = hashTable.equal_range(rightKey);
@@ -933,7 +933,7 @@ void Join::run()
           log_print("split task {} for the probe, start: {}\n", taskid, start);
 #endif
           if (start + step >= rightResult.size()) {
-            vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
+            vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
               for (uint32_t i = start; i < end; i++) {
                 auto rightKey = rightColumn[rightResult[i]];
                 auto range = hashTable.equal_range(rightKey);
@@ -945,7 +945,7 @@ void Join::run()
             }));
             break;
           }
-          vf.push_back(std::async([this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = start + step]() {
+          vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = start + step]() {
             for (uint32_t i = start; i < end; i++) {
               auto rightKey = rightColumn[rightResult[i]];
               auto range = hashTable.equal_range(rightKey);
@@ -1100,7 +1100,7 @@ void Checksum::run()
       uint64_t *column = input->getRelation(sInfo.binding)->columns[sInfo.colId];
       // log_print("result size num: {}, column addr: {}, colId: {}\n", results[0].size(), fmt::ptr(column), colId);
 
-      vf.push_back(std::async([&sInfo, &resulti, column, this]() {
+      vf.push_back(std::async(std::launch::async , [&sInfo, &resulti, column, this]() {
         uint64_t sum = 0;
         for (auto i : resulti) {
           sum += column[i];
