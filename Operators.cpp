@@ -681,6 +681,7 @@ void Join::run()
 #endif
         // merge the results
         for (int i = 0; i < intermediateResults.size(); i++) {
+          intermediateResults[i].reserve(resultSize);
           for (int j = 1; j < parallelResults.size(); j++) {
             intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
           }
@@ -773,6 +774,7 @@ void Join::run()
 #endif
         // merge the results
         for (int i = 0; i < intermediateResults.size(); i++) {
+          intermediateResults[i].reserve(resultSize);
           for (int j = 1; j < parallelResults.size(); j++) {
             intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
           }
@@ -887,6 +889,7 @@ void Join::run()
 #endif
         // merge the results
         for (int i = 0; i < intermediateResults.size(); i++) {
+          intermediateResults[i].reserve(resultSize);
           for (int j = 1; j < parallelResults.size(); j++) {
             intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
           }
@@ -975,6 +978,7 @@ void Join::run()
 #endif
         // merge the results
         for (int i = 0; i < intermediateResults.size(); i++) {
+          intermediateResults[i].reserve(resultSize);
           for (int j = 1; j < parallelResults.size(); j++) {
             intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
           }
