@@ -3,8 +3,8 @@
 #include <queue>
 #include <algorithm>
 #include <future>
-#include <boost/asio/thread_pool.hpp>
-#include <boost/asio/post.hpp>
+// #include <boost/asio/thread_pool.hpp>
+// #include <boost/asio/post.hpp>
 #include "Operators.hpp"
 #include "Consts.hpp"
 #if PRINT_LOG
@@ -1084,7 +1084,8 @@ void Checksum::run()
     }
   } else {
     // first build cache
-    boost::asio::thread_pool pool(std::min(SUM_CACHE_MAX_POOL_SIZE, static_cast<int>(colInfo.size())));
+    // boost::asio::thread_pool pool(std::min(SUM_CACHE_MAX_POOL_SIZE, static_cast<int>(colInfo.size())));
+    std::vector<std::future<void>> vf;
     for (auto &sInfo : colInfo) {
       if (sumsCache.find(sInfo) != sumsCache.end()) {
         continue;
@@ -1095,15 +1096,25 @@ void Checksum::run()
       uint64_t *column = input->getRelation(sInfo.binding)->columns[sInfo.colId];
       // log_print("result size num: {}, column addr: {}, colId: {}\n", results[0].size(), fmt::ptr(column), colId);
 
-      boost::asio::post(pool, [&sInfo, &resulti, column, this]() {
+      vf.push_back(std::async([&sInfo, &resulti, column, this]() {
         uint64_t sum = 0;
         for (auto i : resulti) {
           sum += column[i];
         }
         sumsCache[sInfo] = sum;
-      });
+      }));
+      // boost::asio::post(pool, [&sInfo, &resulti, column, this]() {
+      //   uint64_t sum = 0;
+      //   for (auto i : resulti) {
+      //     sum += column[i];
+      //   }
+      //   sumsCache[sInfo] = sum;
+      // });
     }
-    pool.join();
+    for_each(vf.begin(), vf.end(), [](future<void> &x) {
+      x.wait();
+    });
+    // pool.join();
     // then check cache for sum result
     for (auto &sInfo : colInfo) {
       checkSums.push_back(sumsCache[sInfo]);
