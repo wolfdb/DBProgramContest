@@ -28,7 +28,7 @@ void Joiner::addRelation(const char* fileName)
 void Joiner::buildHistogram()
 {
   int tmpcnt = 0;
-  out.print("max concurrency: {}\n", std::thread::hardware_concurrency());
+  log_print("max concurrency: {}\n", std::thread::hardware_concurrency());
   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   boost::asio::thread_pool pool(std::thread::hardware_concurrency());
   for (auto &relation : relations) {
@@ -41,10 +41,10 @@ void Joiner::buildHistogram()
   }
   pool.join();
   milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  out.print("build histograms run time: {} ms\n\n", end.count() - start.count());
+  log_print("build histograms run time: {} ms\n\n", end.count() - start.count());
   for (auto &relation : relations) {
     for (int i = 0; i < relation.columns.size(); i++) {
-      out.print("build histgram for relation: {}, column {}\n", tmpcnt, i);
+      log_print("build histgram for relation: {}, column {}\n", tmpcnt, i);
       relation.printHistogram(i);
     }
     tmpcnt ++;
@@ -92,7 +92,7 @@ static QueryGraphProvides analyzeInputOfJoin(set<unsigned>& usedRelations,Select
 string Joiner::join(QueryInfo& query)
   // Executes a join query
 {
-  out.print("query {}: {}\n", Joiner::query_count++, query.dumpText());
+  log_print("query {}: {}\n", Joiner::query_count++, query.dumpText());
   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   set<unsigned> usedRelations;
 
@@ -100,7 +100,7 @@ string Joiner::join(QueryInfo& query)
   for (auto &filter: query.filters) {
     auto relId = query.relationIds[filter.filterColumn.binding];
     getRelation(relId).calThenSetEstimateCost(filter);
-    out.print("filter:{}, eCost:{}, rowCount:{}, sorted:{}\n",
+    log_print("filter:{}, eCost:{}, rowCount:{}, sorted:{}\n",
       filter.comparison == FilterInfo::Comparison::Equal ? "=" : filter.comparison == FilterInfo::Comparison::Greater ? ">" : "<",
       filter.eCost, filter.rowCount, filter.sorted);
   }
@@ -147,7 +147,7 @@ string Joiner::join(QueryInfo& query)
   checkSum.run();
 
   milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  out.print("query run time: {} ms\n\n", end.count() - start.count());
+  log_print("query run time: {} ms\n\n", end.count() - start.count());
 
   stringstream out;
   auto& results=checkSum.checkSums;
