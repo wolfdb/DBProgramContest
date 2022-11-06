@@ -62,8 +62,15 @@ int main(int argc, char* argv[]) {
 #else
 
    QueryInfo i;
+   work_load = joiner.relations[0].rowCount;
+   int32_t batch = 0;
    while (getline(cin, line)) {
-      if (line == "F") continue; // End of a batch
+      if (line == "F") {
+         batch ++;
+         continue; // End of a batch
+      }
+      actually_query = Joiner::query_count;
+      log_print("batch: {}\n", batch);
       i.parseQuery(line);
       cout << joiner.join(i);
    }

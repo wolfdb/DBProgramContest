@@ -294,9 +294,10 @@ string Joiner::join(QueryInfo& query)
   // Executes a join query
 {
 #if PRINT_LOG
-  log_print("query {}: {}\n", Joiner::query_count++, query.dumpSQL());
+  log_print("query {}: {}\n", Joiner::query_count, query.dumpSQL());
   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
 #endif
+  Joiner::query_count ++;
 
   // The original left-deep tree
   // unique_ptr<Operator> root = buildPlanTree(query);
