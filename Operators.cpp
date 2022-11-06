@@ -632,9 +632,7 @@ void Join::run()
         std::vector<std::future<size_t>> vf;
         while (start < rightResult[1]) {
           taskid ++;
-#if PRINT_LOG
-          log_print("split task {} for the probe, start: {}\n", taskid, start);
-#endif
+          // log_print("split task {} for the probe, start: {}\n", taskid, start);
           if (start + step >= rightResult[1]) {
             vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
               for (uint32_t i = start; i < end; i++) {
@@ -725,9 +723,7 @@ void Join::run()
         std::vector<std::future<size_t>> vf;
         while (start < rightResult.size()) {
           taskid ++;
-#if PRINT_LOG
-          log_print("split task {} for the probe, start: {}\n", taskid, start);
-#endif
+          // log_print("split task {} for the probe, start: {}\n", taskid, start);
           if (start + step >= rightResult.size()) {
             vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
               for (uint32_t i = start; i < end; i++) {
@@ -840,9 +836,7 @@ void Join::run()
         std::vector<std::future<size_t>> vf;
         while (start < rightResult[1]) {
           taskid ++;
-#if PRINT_LOG
-          log_print("split task {} for the probe, start: {}\n", taskid, start);
-#endif
+          // log_print("split task {} for the probe, start: {}\n", taskid, start);
           if (start + step >= rightResult[1]) {
             vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
               for (uint32_t i = start; i < end; i++) {
@@ -929,9 +923,7 @@ void Join::run()
         std::vector<std::future<size_t>> vf;
         while (start < rightResult.size()) {
           taskid ++;
-#if PRINT_LOG
-          log_print("split task {} for the probe, start: {}\n", taskid, start);
-#endif
+          // log_print("split task {} for the probe, start: {}\n", taskid, start);
           if (start + step >= rightResult.size()) {
             vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
               for (uint32_t i = start; i < end; i++) {
