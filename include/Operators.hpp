@@ -141,15 +141,15 @@ class Join : public Operator {
   /// Create mapping for bindings
   void createMappingForBindings();
 
-#if USE_PARALLEL_BUILD_HASH_TABLE
-  using HT=oneapi::tbb::concurrent_unordered_multimap<uint64_t, uint32_t>;
-#else
   // value to line no multimap
   using HT=std::unordered_multimap<uint64_t,uint32_t>;
-#endif
-
+#if USE_PARALLEL_BUILD_HASH_TABLE
+  /// The hash table for the join
+  std::vector<HT> hashTables;
+#else
   /// The hash table for the join
   HT hashTable;
+#endif
 
   public:
   /// The constructor
