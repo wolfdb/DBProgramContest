@@ -10,25 +10,6 @@
 #include "Relation.hpp"
 #include "Parser.hpp"
 //---------------------------------------------------------------------------
-namespace std {
-  /// Simple hash function to enable use with unordered_map
-  template<> struct hash<SelectInfo> {
-    std::size_t operator()(SelectInfo const& s) const noexcept { return s.binding ^ (s.colId << 5); }
-  };
-
-  template<> struct less<SelectInfo> {
-    constexpr bool operator()( const SelectInfo& lhs, const SelectInfo& rhs ) const {
-      if (lhs.binding > rhs.binding) {
-        return false;
-      } else if (lhs.binding < rhs.binding) {
-        return true;
-      } else {
-        return lhs.colId < rhs.colId;
-      }
-    }
-  };
-};
-//---------------------------------------------------------------------------
 enum class OperatorType { Scan, FilterScan, Join, SelfJoin, Checksum};
 class Operator {
   /// Operators materialize their entire result

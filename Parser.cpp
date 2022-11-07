@@ -3,7 +3,10 @@
 #include <utility>
 #include <sstream>
 #include "Parser.hpp"
+#if PRINT_LOG
 #include "Log.hpp"
+#endif
+#include "Operators.hpp"
 //---------------------------------------------------------------------------
 using namespace std;
 //---------------------------------------------------------------------------
@@ -67,7 +70,16 @@ void QueryInfo::parsePredicate(string& rawPredicate)
     char compType=rawPredicate[relCols[0].size()];
     filters.emplace_back(leftSelect,constant,FilterInfo::Comparison(compType));
   } else {
-    predicates.emplace_back(leftSelect,parseRelColPair(relCols[1]));
+    auto rightSelect = parseRelColPair(relCols[1]);
+    if (leftSelect.binding == rightSelect.binding && leftSelect.colId == rightSelect.colId) {
+#if PRINT_LOG
+      log_print("removed predicate: {}\n", rawPredicate);
+#endif
+      return;
+    }
+    selectInfoMap[leftSelect][rightSelect.binding].insert(rightSelect);
+    selectInfoMap[rightSelect][leftSelect.binding].insert(leftSelect);
+    // log_print("parsePredicate: left {}, right {}, map size {}\n", leftSelect.dumpText(), rightSelect.dumpText(), selectInfoMap.size());
   }
 }
 //---------------------------------------------------------------------------
@@ -78,6 +90,39 @@ void QueryInfo::parsePredicates(string& text)
   splitString(text,predicateStrings,'&');
   for (auto& rawPredicate : predicateStrings) {
     parsePredicate(rawPredicate);
+  }
+
+  // resemble predicates
+  for (auto &selectInfo: selectInfoMap) {
+    auto left = selectInfo.first;
+    // log_print("left select: ({},{})\n", left.binding, left.colId);
+    for (auto &selectSet : selectInfo.second) {
+      if (selectSet.second.size() == 1) {
+        auto right = *(selectSet.second.begin());
+        if (left < right) {
+          // log_print("left {},{} < right {},{}\n", left.binding, left.colId, right.binding, right.colId);
+          predicatesSet.insert({left, right});
+        } // let the other half handle to avoid duplicate
+      } else {
+        auto tleft = *(selectSet.second.begin());
+        for (auto tright : selectSet.second) {
+          // log_print("  left select: ({},{})\n", left.binding, left.colId);
+          if (tleft < tright) {
+            // log_print("   right select: ({},{})\n", tright.binding, tright.colId);
+            predicatesSet.insert({tleft, tright});
+          }
+        }
+        if (left < tleft) {
+          // log_print(" right select: ({},{})\n", tleft.binding, tleft.colId);
+          predicatesSet.insert({left, tleft});
+        }
+      }
+    }
+  }
+
+  for (auto &predicate : predicatesSet) {
+    // log_print("dump: {}\n", predicate.dumpText());
+    predicates.push_back(predicate);
   }
 }
 //---------------------------------------------------------------------------
@@ -126,6 +171,7 @@ void QueryInfo::parseQuery(string& rawQuery)
   parsePredicates(queryParts[1]);
   parseSelections(queryParts[2]);
   resolveRelationIds();
+  log_print("original query: {}\nrewrite query: {}\n", rawQuery, dumpText());
 }
 //---------------------------------------------------------------------------
 void QueryInfo::clear()
@@ -135,6 +181,8 @@ void QueryInfo::clear()
   predicates.clear();
   filters.clear();
   selections.clear();
+  selectInfoMap.clear();
+  predicatesSet.clear();
 }
 //---------------------------------------------------------------------------
 static string wrapRelationName(uint64_t id)
@@ -143,14 +191,14 @@ static string wrapRelationName(uint64_t id)
   return "\""+to_string(id)+"\"";
 }
 //---------------------------------------------------------------------------
-string SelectInfo::dumpSQL(bool addSUM)
+string SelectInfo::dumpSQL(bool addSUM) const
   // Appends a selection info to the stream
 {
   auto innerPart=wrapRelationName(binding)+".c"+to_string(colId);
   return addSUM?"SUM("+innerPart+")":innerPart;
 }
 //---------------------------------------------------------------------------
-string SelectInfo::dumpText()
+string SelectInfo::dumpText() const
   // Dump text format
 {
   return to_string(binding)+"."+to_string(colId);
@@ -168,13 +216,13 @@ string FilterInfo::dumpSQL()
   return filterColumn.dumpSQL()+static_cast<char>(comparison)+to_string(constant);
 }
 //---------------------------------------------------------------------------
-string PredicateInfo::dumpText()
+string PredicateInfo::dumpText() const
   // Dump text format
 {
   return left.dumpText()+'='+right.dumpText();
 }
 //---------------------------------------------------------------------------
-string PredicateInfo::dumpSQL()
+string PredicateInfo::dumpSQL() const
   // Dump text format
 {
   return left.dumpSQL()+'='+right.dumpSQL();

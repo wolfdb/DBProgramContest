@@ -11,7 +11,6 @@
 #include "Log.hpp"
 //---------------------------------------------------------------------------
 using namespace std;
-using namespace boost::histogram;
 //---------------------------------------------------------------------------
 void Relation::storeRelation(const string& fileName)
   // Stores a relation into a binary file
@@ -83,7 +82,7 @@ void Relation::buildHistogram(int idx)
   uint64_t tmp_min = column[0];
   uint64_t pre = column[0];
   uint64_t cnt = 1;
-  bool sorted = true;
+  bool sorted = false;
   bool asc = false;
   bool desc = false;
   for (int i = 1; i < this->sampleCount; i++) {
@@ -109,172 +108,39 @@ void Relation::buildHistogram(int idx)
 
   this->sample_maxs[idx] = tmp_max;
   this->sample_mins[idx] = tmp_min;
-
-  if (sorted) {
-    uint64_t lastVal = column[this->rowCount - 1];
-    this->sorts[idx] = Sorted::Likely;
-    if (asc) {
-      this->orders[idx] = Order::ASC;
-      this->maxs[idx] = lastVal;
-    } else {
-      this->orders[idx] = Order::DESC;
-      this->mins[idx] = lastVal;
-    }
-    this->sample_distinct_count[idx] = cnt;
-  } else {
-    this->sorts[idx] = Sorted::False;
-  }
-
-#if 0
-  // second scan, build histogram
-  if (this->sorts[idx] == Sorted::Likely) {
-    uint64_t lastVal = column[this->rowCount - 1];
-    pre = column[0];
-    cnt = 1;
-    if (this->orders[idx] == Order::ASC) {
-      assert(lastVal > this->sample_maxs[idx]);
-      auto h = make_histogram(axis::regular<>(HISTOGRAM_BUCKET_CNT, this->sample_mins[idx], lastVal));
-      h(pre);
-      for (int i = 1; i < this->rowCount; i++) {
-        uint64_t val = column[i];
-        if (val < pre) {
-          sorted = false;
-          break;
-        }
-        h(column[i]);
-        if (val > pre) {
-          cnt ++;
-        }
-        pre = val;
-      }
-      this->histograms[idx].hist_ = std::move(h);
-    } else {
-      assert(lastVal < this->sample_mins[idx]);
-      auto h = make_histogram(axis::regular<>(HISTOGRAM_BUCKET_CNT, lastVal, this->sample_maxs[idx]));
-      h (pre);
-      for (int i = 0; i < this->rowCount; i++) {
-        uint64_t val = column[i];
-        if (val > pre) {
-          sorted = false;
-          break;
-        }
-        h(column[i]);
-        if (val < pre) {
-          cnt ++;
-        }
-        pre = val;
-      }
-    }
-    if (sorted == false) {
-      this->sorts[idx] = Sorted::False;
-    } else {
-      this->sorts[idx] = Sorted::True;
-      this->distinct_count[idx] = cnt;
-      if (this->orders[idx] == Order::ASC) {
-        this->mins[idx] = this->sample_mins[idx];
-        this->maxs[idx] = lastVal;
-      } else {
-        this->mins[idx] = lastVal;
-        this->maxs[idx] = this->sample_maxs[idx];
-      }
-    }
-  }
-#endif
-
-  if (this->sorts[idx] == Sorted::False) {
-    auto h = make_histogram(axis::regular<>(HISTOGRAM_BUCKET_CNT, this->sample_mins[idx], this->sample_maxs[idx]));
-    auto &sample_distinctVal = this->sample_distinctVals[idx];
-    for (int i = 0; i < this->sampleCount; i++) {
-      h(column[i]);
-      sample_distinctVal.insert(column[i]);
-    }
-    this->sample_histograms[idx].hist_ = std::move(h);
-  }
-}
-//---------------------------------------------------------------------------
-void Relation::printHistogram(int idx)
-  // print histogram of column idx
-{
-  if (this->sorts[idx] == Sorted::True) {
-    log_print("Max: {}, Min: {}\n", this->maxs[idx], this->mins[idx]);
-    log_print("Sorted, order: {}\n", this->orders[idx] == Order::ASC ? "ASC" : "DESC");
-    log_print("  distinct values cnt: {}\n", this->distinct_count[idx]);
-    // auto &h = this->histograms[idx].hist_;
-    // for (auto&& x : indexed(h, coverage::all)) {
-    //   log_print("bin {} [{}, {}): {}\n", x.index(), x.bin().lower(), x.bin().upper(), *x);
-    // }
-  } else if (this->sorts[idx] == Sorted::Likely) {
-    log_print("Max: {}, Min: {}\n", this->sample_maxs[idx], this->sample_mins[idx]);
-    log_print(" order: {}\n", this->orders[idx] == Order::ASC ? "ASC" : "DESC");
-    log_print("  distinct values cnt: {}\n", this->sample_distinct_count[idx]);
-  } else {
-    log_print("Max: {}, Min: {}\n", this->sample_maxs[idx], this->sample_mins[idx]);
-    log_print("Sorted: {}\n", "False");
-    log_print("  distinct values cnt: {}\n", this->sample_distinctVals[idx].size());
-    // auto &h = this->sample_histograms[idx].hist_;
-    // for (auto&& x : indexed(h, coverage::all)) {
-    //   log_print("bin {} [{}, {}): {}\n", x.index(), x.bin().lower(), x.bin().upper(), *x);
-    // }
-  }
 }
 //---------------------------------------------------------------------------
 void Relation::calThenSetEstimateCost(FilterInfo &filter)
   // Calculate the estimate cost
 {
   unsigned idx = filter.filterColumn.colId;
-  auto sorted = sorts[idx];
-  auto ordered = orders[idx];
   auto count = this->rowCount;
   auto scount = this->sampleCount;
   double sample_factor = static_cast<double>(count) / static_cast<double>(scount);
   double fraction = 0.;
   filter.rowCount = count;
-  filter.sorted = sorted == Sorted::Likely;
-  // log_print("colIdx:{}, rowCount:{}, sampleCount:{}, sample_max:{}, sample_min:{}, max:{}, min:{}\n", idx, count, scount, sample_maxs[idx], sample_mins[idx], maxs[idx], mins[idx]);
   switch (filter.comparison)
   {
   case FilterInfo::Comparison::Equal:
-    if (sorted == Sorted::Likely) {
-      filter.eCost = (scount / this->sample_distinct_count[idx]);
-    } else {
-      // build concurrent unordered multimap?
-      filter.eCost = static_cast<uint64_t>((static_cast<double>(scount) / this->sample_distinctVals[idx].size()) * sample_factor);
-    }
+    // build concurrent unordered multimap?
+    filter.eCost = static_cast<uint64_t>((static_cast<double>(scount) / this->sample_distinctVals[idx].size()) * sample_factor);
     break;
   case FilterInfo::Comparison::Greater:
-    if (sorted == Sorted::Likely) {
-      if (ordered == Order::ASC) {
-        fraction = static_cast<double>(maxs[idx] - filter.constant) / static_cast<double>(maxs[idx] - sample_mins[idx]);
-      } else {
-        fraction = static_cast<double>(sample_maxs[idx] - filter.constant) / static_cast<double>(sample_maxs[idx] - mins[idx]);
-      }
-      filter.eCost = static_cast<uint64_t>(count * fraction);
+    // build concurrent multimap?
+    if (filter.constant > sample_maxs[idx] || filter.constant < sample_mins[idx]) {
+      filter.eCost = count;
     } else {
-      // build concurrent multimap?
-      if (filter.constant > sample_maxs[idx] || filter.constant < sample_mins[idx]) {
-        filter.eCost = count;
-      } else {
-        fraction = static_cast<double>(sample_maxs[idx] - filter.constant) / static_cast<double>(sample_maxs[idx] - sample_mins[idx]);
-        filter.eCost = static_cast<uint64_t>(count * fraction);
-      }
+      fraction = static_cast<double>(sample_maxs[idx] - filter.constant) / static_cast<double>(sample_maxs[idx] - sample_mins[idx]);
+      filter.eCost = static_cast<uint64_t>(count * fraction);
     }
     break;
   case FilterInfo::Comparison::Less:
-    if (sorted == Sorted::Likely) {
-      if (ordered == Order::ASC) {
-        fraction = static_cast<double>(filter.constant - sample_mins[idx]) / static_cast<double>(maxs[idx] - sample_mins[idx]);
-      } else {
-        fraction = static_cast<double>(filter.constant - mins[idx]) / static_cast<double>(sample_maxs[idx] - mins[idx]);
-      }
-      filter.eCost = static_cast<uint64_t>(count * fraction);
+    // build concurrent multimap?
+    if (filter.constant > sample_maxs[idx] || filter.constant < sample_mins[idx]) {
+      filter.eCost = count;
     } else {
-      // build concurrent multimap?
-      if (filter.constant > sample_maxs[idx] || filter.constant < sample_mins[idx]) {
-        filter.eCost = count;
-      } else {
-        fraction = static_cast<double>(filter.constant - sample_mins[idx]) / static_cast<double>(sample_maxs[idx] - sample_mins[idx]);
-        filter.eCost = static_cast<uint64_t>(count * fraction);
-      }
+      fraction = static_cast<double>(filter.constant - sample_mins[idx]) / static_cast<double>(sample_maxs[idx] - sample_mins[idx]);
+      filter.eCost = static_cast<uint64_t>(count * fraction);
     }
     break;
   default:
@@ -323,19 +189,11 @@ void Relation::loadRelation(const char* fileName)
   this->sample_mins.resize(numColumns, std::numeric_limits<uint64_t>::max());
   this->sample_distinct_count.resize(numColumns, 0);
   this->sample_distinctVals.resize(numColumns);
-  this->sample_histograms.resize(numColumns);
-
-  // resize sort and order vector
-  this->sorts.resize(numColumns);
-  this->orders.resize(numColumns);
 
   // resize real vectors
   this->maxs.resize(numColumns, std::numeric_limits<uint64_t>::min());
   this->mins.resize(numColumns, std::numeric_limits<uint64_t>::max());
   this->distinct_count.resize(numColumns);
-  this->columnHmap.resize(numColumns);
-  this->hasHmapBuilt.resize(numColumns, false);
-  this->histograms.resize(numColumns);
 
   // calculate sample count we should read
   this->calcSampleCount();
