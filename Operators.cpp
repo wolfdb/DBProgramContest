@@ -598,11 +598,11 @@ void Join::run()
 #endif
     assert(leftResults.size() == 1);
     auto &leftResult = leftResults[0];
+    uint32_t build_cnt = 1;
     assert(left->resultSize == leftResult[1] - leftResult[0]);
 #if USE_PARALLEL_BUILD_HASH_TABLE
     if (leftResult[1] - leftResult[0] > (MIN_BUILD_ITEM_CNT << 1)) {
-      uint32_t build_cnt = (leftResult[1] - leftResult[0]) / MIN_BUILD_ITEM_CNT;
-      build_cnt = std::min(build_cnt, MAX_BUILD_TASK_CNT);
+      build_cnt = std::min((uint32_t)(leftResult[1] - leftResult[0]) / MIN_BUILD_ITEM_CNT, MAX_BUILD_TASK_CNT);
       hashTables.resize(build_cnt);
       size_t bstep = (leftResult[1] - leftResult[0] + build_cnt - 1) / build_cnt;
       size_t bstart = leftResult[0] + bstep;
@@ -610,9 +610,9 @@ void Join::run()
       std::vector<std::future<void>> bvf;
       while (bstart < leftResult[1]) {
         buildid ++;
-        // log_print("split task {} for the probe, start: {}\n", taskid, start);
         if (bstart + bstep >= leftResult[1]) {
-          bvf.push_back(std::async(std::launch::async , [this, &hashTable = hashTables[buildid], leftColumn, bstart, bend = leftResult[1]]() {
+          // log_print("split task {} for the probe, start: {}, bend {}\n", buildid, bstart, leftResult[1]);
+          bvf.push_back(std::async(std::launch::async, [&hashTable = hashTables[buildid], leftColumn, bstart, bend = leftResult[1]]() {
             hashTable.reserve((bend - bstart) * 2);
             for (uint32_t i = bstart; i < bend; i++) {
               hashTable.emplace(leftColumn[i], i);
@@ -620,19 +620,24 @@ void Join::run()
           }));
           break;
         }
-        bvf.push_back(std::async(std::launch::async , [this, &hashTable = hashTables[buildid], leftColumn, bstart, bend = bstart + bstep]() {
+        // log_print("split task {} for the probe, start: {}, bend {}\n", buildid, bstart, bstart + bstep);
+        bvf.push_back(std::async(std::launch::async, [&hashTable = hashTables[buildid], leftColumn, bstart, bend = bstart + bstep]() {
           hashTable.reserve((bend - bstart) * 2);
           for (uint32_t i = bstart; i < bend; i++) {
             hashTable.emplace(leftColumn[i], i);
           }
         }));
+        bstart += bstep;
       }
       hashTables[0].reserve(bstep * 2);
-      for (uint32_t i = leftResult[0]; i < bstep; i++) {
+      for (uint32_t i = leftResult[0]; i < leftResult[0] + bstep; i++) {
         hashTables[0].emplace(leftColumn[i], i);
       }
 
       for_each(bvf.begin(), bvf.end(), [](future<void> &x) { x.wait(); });
+      // for (uint32_t i = 0; i < build_cnt; i++) {
+      //   log_print("hashmap {} size: {}\n", i, hashTables[i].size());
+      // }
     } else {
       hashTables.resize(1);
       hashTables[0].reserve(left->resultSize * 2);
@@ -645,7 +650,7 @@ void Join::run()
         hashTables[0].emplace(leftColumn[i], i);
       }
     }
-#else
+#else   // USE_PARALLEL_BUILD_HASH_TABLE
     hashTable.reserve(left->resultSize * 2);
     // log_print("range [{}, {})\n", leftResult[0], leftResult[1]);
     for (uint32_t i = leftResult[0]; i < leftResult[1]; i++) {
@@ -656,7 +661,8 @@ void Join::run()
       // log_print(" emplace {}, {}\n", leftColumn[i], i);
       hashTable.emplace(leftColumn[i], i);
     }
-#endif
+    // log_print("hashmap size: {}\n", hashTable.size());
+#endif  // USE_PARALLEL_BUILD_HASH_TABLE
 #if PRINT_LOG
     end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
     log_print("Left result size: {}, is range: true, build hashmap time {} ms\n", leftResult[1] - leftResult[0], end.count() - tmpms.count());
@@ -676,56 +682,106 @@ void Join::run()
         size_t step = (rightResult[1] - rightResult[0] + task_cnt - 1) / task_cnt;
         size_t start = rightResult[0] + step;
         int taskid = 0;
-        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(task_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
-
+        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(task_cnt * build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
         std::vector<std::future<size_t>> vf;
+#if USE_PARALLEL_BUILD_HASH_TABLE
         while (start < rightResult[1]) {
           taskid ++;
-          // log_print("split task {} for the probe, start: {}\n", taskid, start);
           if (start + step >= rightResult[1]) {
-            vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
-              for (auto &result : results) {
-                result.reserve(end - start + 1);
-              }
-              for (uint32_t i = start; i < end; i++) {
-                auto rightKey = rightColumn[i];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-                for (auto &hashTable: hashTables) {
+            for (uint32_t ii = 0; ii < build_cnt; ii++) {
+              // log_print("l taskid {}, buildid {}, slot {}\n", taskid, ii, taskid * build_cnt + ii);
+              vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, start, end = rightResult[1]]() {
+                for (auto &result: results) {
+                  result.reserve(end - start + 1);
+                }
+                for (uint32_t i = start; i < end; i++) {
+                  auto rightKey = rightColumn[i];
                   auto range = hashTable.equal_range(rightKey);
                   for (auto iter = range.first; iter != range.second; ++iter) {
                     copy2ResultLRP(results, iter->second, i);
                   }
                 }
-#else
+                return results[0].size();
+              }));
+            }
+            break;
+          }
+          for (uint32_t ii = 0; ii < build_cnt; ii++) {
+            // log_print("n taskid {}, buildid {}, slot {}\n", taskid, ii, taskid * build_cnt + ii);
+            vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, start, end = start + step]() {
+              for (auto &result: results) {
+                result.reserve(end - start + 1);
+              }
+              for (uint32_t i = start; i < end; i++) {
+                auto rightKey = rightColumn[i];
                 auto range = hashTable.equal_range(rightKey);
                 for (auto iter = range.first; iter != range.second; ++iter) {
                   copy2ResultLRP(results, iter->second, i);
                 }
-#endif
+              }
+              return results[0].size();
+            }));
+          }
+          start += step;
+        }
+
+        for (uint32_t ii = 1; ii < build_cnt; ii++) {
+          // log_print("taskid {}, buildid {}, slot {}\n", 0, ii, ii);
+          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[0] + step]() {
+            for (auto &result: results) {
+              result.reserve(end - start + 1);
+            }
+            for (uint32_t i = start; i < end; i++) {
+              auto rightKey = rightColumn[i];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultLRP(results, iter->second, i);
+              }
+            }
+            return results[0].size();
+          }));
+        }
+
+        for (auto &result : intermediateResults) {
+          result.reserve(rightResult[1] - rightResult[0]);
+        }
+        for (uint32_t i = rightResult[0]; i < rightResult[0] + step; i++) {
+          auto rightKey = rightColumn[i];
+          auto range = hashTables[0].equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultLR(iter->second, i);
+          }
+        }
+#else   // USE_PARALLEL_BUILD_HASH_TABLE
+        while (start < rightResult[1]) {
+          taskid ++;
+          // log_print("split task {} for the probe, start: {}\n", taskid, start);
+          if (start + step >= rightResult[1]) {
+            vf.push_back(std::async(std::launch::async, [this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
+              for (auto &result : results) {
+                result.reserve(end - start + 1);
+              }
+              for (uint32_t i = start; i < end; i++) {
+                auto rightKey = rightColumn[i];
+                auto range = hashTable.equal_range(rightKey);
+                for (auto iter = range.first; iter != range.second; ++iter) {
+                  copy2ResultLRP(results, iter->second, i);
+                }
               }
               return results[0].size();
             }));
             break;
           }
-          vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, start, end = start + step]() {
+          vf.push_back(std::async(std::launch::async, [this, &results = parallelResults[taskid], rightColumn, start, end = start + step]() {
             for (auto &result : results) {
               result.reserve(end - start + 1);
             }
             for (uint32_t i = start; i < end; i++) {
               auto rightKey = rightColumn[i];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-              for (auto &hashTable: hashTables) {
-                auto range = hashTable.equal_range(rightKey);
-                for (auto iter = range.first; iter != range.second; ++iter) {
-                  copy2ResultLRP(results, iter->second, i);
-                }
-              }
-#else
               auto range = hashTable.equal_range(rightKey);
               for (auto iter = range.first; iter != range.second; ++iter) {
                 copy2ResultLRP(results, iter->second, i);
               }
-#endif
             }
             return results[0].size();
           }));
@@ -736,26 +792,20 @@ void Join::run()
         }
         for (uint32_t i = rightResult[0]; i < rightResult[0] + step; i++) {
           auto rightKey = rightColumn[i];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-          for (auto &hashTable: hashTables) {
-            auto range = hashTable.equal_range(rightKey);
-            for (auto iter = range.first; iter != range.second; ++iter) {
-              copy2ResultLR(iter->second, i);
-            }
-          }
-#else
           auto range = hashTable.equal_range(rightKey);
           for (auto iter = range.first; iter != range.second; ++iter) {
             copy2ResultLR(iter->second, i);
           }
-#endif
         }
+#endif
         // wait for the results
         size_t pcnt = 0;
         for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
-          pcnt += x.get();
-          // log_print("subtasks probe get {} results\n", pcnt);
+          size_t tmp = x.get();
+          pcnt += tmp;
+          // log_print("subtasks probe get {} results, x: {}\n", pcnt, tmp);
         });
+        // log_print("subtask 0 get {} results\n", resultSize);
         resultSize += pcnt;
 #if PRINT_LOG
         // end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
@@ -769,44 +819,115 @@ void Join::run()
             intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
           }
         }
-      } else {
+      } else {  // result size smaller than MIN_PROBE_ITEM_CNT
+#if USE_PARALLEL_BUILD_HASH_TABLE
+        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
+        std::vector<std::future<size_t>> vf;
+        for (uint32_t ii = 1; ii < build_cnt; ii++) {
+          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[1]]() {
+            for (auto &result : results) {
+              result.reserve(end - start + 1);
+            }
+            for (uint32_t i = start; i < end; i++) {
+              auto rightKey = rightColumn[i];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultLRP(results, iter->second, i);
+              }
+            }
+            return results[0].size();
+          }));
+        }
+        for (auto &result : intermediateResults) {
+          result.reserve(rightResult[1] - rightResult[0]);
+        }
+        for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
+          auto rightKey = rightColumn[i];
+          auto range = hashTables[0].equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultLR(iter->second, i);
+          }
+        }
+        // merge results
+        size_t pcnt = 0;
+        for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+          pcnt += x.get();
+          // log_print("subtasks probe get {} results\n", pcnt);
+        });
+        resultSize += pcnt;
+        for (int i = 0; i < intermediateResults.size(); i++) {
+          intermediateResults[i].reserve(resultSize);
+          for (int j = 1; j < parallelResults.size(); j++) {
+            intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
+          }
+        }
+#else
         for (auto &result : intermediateResults) {
           result.reserve(rightResult[1] - rightResult[0] + 1);
         }
         for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
           auto rightKey = rightColumn[i];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-          for (auto &hashTable: hashTables) {
-            auto range = hashTable.equal_range(rightKey);
-            for (auto iter = range.first; iter != range.second; ++iter) {
-              copy2ResultLR(iter->second, i);
-            }
-          }
-#else
           auto range = hashTable.equal_range(rightKey);
           for (auto iter = range.first; iter != range.second; ++iter) {
             copy2ResultLR(iter->second, i);
           }
-#endif
         }
+#endif  // USE_PARALLEL_BUILD_HASH_TABLE
       }
 #else   // USE_PARALLEL_PROBE
-      for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
-        auto rightKey = rightColumn[i];
 #if USE_PARALLEL_BUILD_HASH_TABLE
-        for (auto &hashTable: hashTables) {
-          auto range = hashTable.equal_range(rightKey);
+      std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
+        std::vector<std::future<size_t>> vf;
+        for (uint32_t ii = 1; ii < build_cnt; ii++) {
+          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[1]]() {
+            for (auto &result : results) {
+              result.reserve(end - start + 1);
+            }
+            for (uint32_t i = start; i < end; i++) {
+              auto rightKey = rightColumn[i];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultLRP(results, iter->second, i);
+              }
+            }
+            return results[0].size();
+          }));
+        }
+        for (auto &result : intermediateResults) {
+          result.reserve(step);
+        }
+        for (uint32_t i = rightResult[0]; i < rightResult[0] + step; i++) {
+          auto rightKey = rightColumn[i];
+          auto range = hashTables[0].equal_range(rightKey);
           for (auto iter = range.first; iter != range.second; ++iter) {
             copy2ResultLR(iter->second, i);
           }
         }
+        // merge results
+        size_t pcnt = 0;
+        for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+          pcnt += x.get();
+          // log_print("subtasks probe get {} results\n", pcnt);
+        });
+        resultSize += pcnt;
+        for (int i = 0; i < intermediateResults.size(); i++) {
+          intermediateResults[i].reserve(resultSize);
+          for (int j = 1; j < parallelResults.size(); j++) {
+            intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
+          }
+        }
 #else
+      for (auto &result : intermediateResults) {
+        result.reserve(rightResult[1] - rightResult[0] + 1);
+      }
+      for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
+        auto rightKey = rightColumn[i];
         auto range = hashTable.equal_range(rightKey);
         for (auto iter = range.first; iter != range.second; ++iter) {
           copy2ResultLR(iter->second, i);
         }
-#endif
       }
+#endif
 #endif  // USE_PARALLEL_PROBE
 #if PRINT_LOG
       end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
@@ -824,9 +945,72 @@ void Join::run()
         size_t step = (rightResult.size() + task_cnt - 1) / task_cnt;
         size_t start = step;
         int taskid = 0;
-        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(task_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
-
+        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(task_cnt * build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
         std::vector<std::future<size_t>> vf;
+#if USE_PARALLEL_BUILD_HASH_TABLE
+        while (start < rightResult.size()) {
+          taskid ++;
+          if (start + step >= rightResult.size()) {
+            for (uint32_t ii = 0; ii < build_cnt; ii++) {
+              vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, &rightResult, start, end = rightResult.size()]() {
+                for (auto &result: results) {
+                  result.reserve(end - start + 1);
+                }
+                for (uint32_t i = start; i < end; i++) {
+                  auto rightKey = rightColumn[rightResult[i]];
+                  auto range = hashTable.equal_range(rightKey);
+                  for (auto iter = range.first; iter != range.second; ++iter) {
+                    copy2ResultLP(results, iter->second, i);
+                  }
+                }
+                return results[0].size();
+              }));
+            }
+            break;
+          }
+          for (uint32_t ii = 0; ii < build_cnt; ii++) {
+            vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, &rightResult, start, end = start + step]() {
+              for (auto &result: results) {
+                result.reserve(end - start + 1);
+              }
+              for (uint32_t i = start; i < end; i++) {
+                auto rightKey = rightColumn[rightResult[i]];
+                auto range = hashTable.equal_range(rightKey);
+                for (auto iter = range.first; iter != range.second; ++iter) {
+                  copy2ResultLP(results, iter->second, i);
+                }
+              }
+              return results[0].size();
+            }));
+          }
+          start += step;
+        }
+        for (uint32_t ii = 1; ii < build_cnt; ii++) {
+          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = step]() {
+            for (auto &result: results) {
+              result.reserve(end - start + 1);
+            }
+            for (uint32_t i = start; i < end; i++) {
+              auto rightKey = rightColumn[rightResult[i]];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultLP(results, iter->second, i);
+              }
+            }
+            return results[0].size();
+          }));
+        }
+        for (auto &result : intermediateResults) {
+          result.reserve(step);
+        }
+        for (uint32_t i = 0; i < step; i++) {
+          auto rightKey = rightColumn[rightResult[i]];
+          auto range = hashTables[0].equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultL(iter->second, i);
+          }
+        }
+#else   // USE_PARALLEL_BUILD_HASH_TABLE
         while (start < rightResult.size()) {
           taskid ++;
           // log_print("split task {} for the probe, start: {}\n", taskid, start);
@@ -837,19 +1021,10 @@ void Join::run()
               }
               for (uint32_t i = start; i < end; i++) {
                 auto rightKey = rightColumn[rightResult[i]];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-                for (auto &hashTable: hashTables) {
-                  auto range = hashTable.equal_range(rightKey);
-                  for (auto iter = range.first; iter != range.second; ++iter) {
-                    copy2ResultLP(results, iter->second, i);
-                  }
-                }
-#else
                 auto range = hashTable.equal_range(rightKey);
                 for (auto iter = range.first; iter != range.second; ++iter) {
                   copy2ResultLP(results, iter->second, i);
                 }
-#endif
               }
               return results[0].size();
             }));
@@ -861,19 +1036,10 @@ void Join::run()
             }
             for (uint32_t i = start; i < end; i++) {
               auto rightKey = rightColumn[rightResult[i]];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-              for (auto &hashTable: hashTables) {
-                auto range = hashTable.equal_range(rightKey);
-                for (auto iter = range.first; iter != range.second; ++iter) {
-                  copy2ResultLP(results, iter->second, i);
-                }
-              }
-#else
               auto range = hashTable.equal_range(rightKey);
               for (auto iter = range.first; iter != range.second; ++iter) {
                 copy2ResultLP(results, iter->second, i);
               }
-#endif
             }
             return results[0].size();
           }));
@@ -884,20 +1050,12 @@ void Join::run()
         }
         for (uint32_t i = 0; i < step; i++) {
           auto rightKey = rightColumn[rightResult[i]];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-          for (auto &hashTable: hashTables) {
-            auto range = hashTable.equal_range(rightKey);
-            for (auto iter = range.first; iter != range.second; ++iter) {
-              copy2ResultL(iter->second, i);
-            }
-          }
-#else
           auto range = hashTable.equal_range(rightKey);
           for (auto iter = range.first; iter != range.second; ++iter) {
             copy2ResultL(iter->second, i);
           }
-#endif
         }
+#endif
         // wait for the results
         size_t pcnt = 0;
         for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
@@ -918,37 +1076,105 @@ void Join::run()
           }
         }
       } else {
+#if USE_PARALLEL_BUILD_HASH_TABLE
+        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
+        std::vector<std::future<size_t>> vf;
+        for (uint32_t ii = 1; ii < build_cnt; ii++) {
+          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = rightResult.size()]() {
+            for (auto &result: results) {
+              result.reserve(end - start + 1);
+            }
+            for (uint32_t i = start; i < end; i++) {
+              auto rightKey = rightColumn[rightResult[i]];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultLP(results, iter->second, i);
+              }
+            }
+            return results[0].size();
+          }));
+        }
+        for (auto &result : intermediateResults) {
+          result.reserve(rightResult.size());
+        }
+        for (uint32_t i = 0; i < rightResult.size(); i++) {
+          auto rightKey = rightColumn[rightResult[i]];
+          auto range = hashTables[0].equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultL(iter->second, i);
+          }
+        }
+        // merge results
+        size_t pcnt = 0;
+        for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+          pcnt += x.get();
+          // log_print("subtasks probe get {} results\n", pcnt);
+        });
+        resultSize += pcnt;
+        for (int i = 0; i < intermediateResults.size(); i++) {
+          intermediateResults[i].reserve(resultSize);
+          for (int j = 1; j < parallelResults.size(); j++) {
+            intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
+          }
+        }
+#else   // USE_PARALLEL_BUILD_HASH_TABLE
         for (uint32_t i = 0; i < rightResult.size(); i++) {
           auto rightKey = rightColumn[rightResult[i]];
           // log_print("  rightKey: {}\n", rightKey);
-#if USE_PARALLEL_BUILD_HASH_TABLE
-          for (auto &hashTable: hashTables) {
-            auto range = hashTable.equal_range(rightKey);
-            for (auto iter = range.first; iter != range.second; ++iter) {
-              copy2ResultL(iter->second, i);
-            }
-          }
-#else
           auto range = hashTable.equal_range(rightKey);
           for (auto iter = range.first; iter != range.second; ++iter) {
             // log_print("  hash key {}, copy {}, {}\n", iter->first, iter->second, i);
             copy2ResultL(iter->second, i);
           }
-#endif
         }
+#endif  // USE_PARALLEL_BUILD_HASH_TABLE
       }
 #else     // USE_PARALLEL_PROBE
+#if USE_PARALLEL_BUILD_HASH_TABLE
+      std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
+      std::vector<std::future<size_t>> vf;
+      for (uint32_t ii = 1; ii < build_cnt; ii++) {
+        vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = rightResult.size()]() {
+          for (auto &result: results) {
+            result.reserve(end - start + 1);
+          }
+          for (uint32_t i = start; i < end; i++) {
+            auto rightKey = rightColumn[rightResult[i]];
+            auto range = hashTable.equal_range(rightKey);
+            for (auto iter = range.first; iter != range.second; ++iter) {
+              copy2ResultLP(results, iter->second, i);
+            }
+          }
+          return results[0].size();
+        }));
+      }
+      for (auto &result : intermediateResults) {
+        result.reserve(rightResult.size());
+      }
+      for (uint32_t i = 0; i < rightResult.size(); i++) {
+        auto rightKey = rightColumn[rightResult[i]];
+        auto range = hashTables[0].equal_range(rightKey);
+        for (auto iter = range.first; iter != range.second; ++iter) {
+          copy2ResultL(iter->second, i);
+        }
+      }
+      // merge results
+      size_t pcnt = 0;
+      for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+        pcnt += x.get();
+        // log_print("subtasks probe get {} results\n", pcnt);
+      });
+      resultSize += pcnt;
+      for (int i = 0; i < intermediateResults.size(); i++) {
+        intermediateResults[i].reserve(resultSize);
+        for (int j = 1; j < parallelResults.size(); j++) {
+          intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
+        }
+      }
+#else
       for (uint32_t i = 0; i < rightResult.size(); i++) {
         auto rightKey = rightColumn[rightResult[i]];
         // log_print("  rightKey: {}\n", rightKey);
-#if USE_PARALLEL_BUILD_HASH_TABLE
-        for (auto &hashTable: hashTables) {
-          auto range = hashTable.equal_range(rightKey);
-          for (auto iter = range.first; iter != range.second; ++iter) {
-            copy2ResultL(iter->second, i);
-          }
-        }
-#else
         auto range = hashTable.equal_range(rightKey);
         for (auto iter = range.first; iter != range.second; ++iter) {
           // log_print("  hash key {}, copy {}, {}\n", iter->first, iter->second, i);
@@ -968,19 +1194,19 @@ void Join::run()
     tmpms = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
 #endif
     auto leftResult = leftResults[leftColId];
+    uint32_t build_cnt = 1;
 #if USE_PARALLEL_BUILD_HASH_TABLE
     if (leftResult.size() > (MIN_BUILD_ITEM_CNT << 1)) {
-      uint32_t build_cnt = (leftResult.size()) / MIN_BUILD_ITEM_CNT;
-      build_cnt = std::min(build_cnt, MAX_BUILD_TASK_CNT);
+      build_cnt = std::min((uint32_t)(leftResult.size() / MIN_BUILD_ITEM_CNT), MAX_BUILD_TASK_CNT);
       hashTables.resize(build_cnt);
-      size_t bstep = (leftResult[1] - leftResult[0] + build_cnt - 1) / build_cnt;
-      size_t bstart = leftResult[0] + bstep;
+      size_t bstep = (leftResult.size() + build_cnt - 1) / build_cnt;
+      size_t bstart = bstep;
       int buildid = 0;
       std::vector<std::future<void>> bvf;
       while (bstart < leftResult.size()) {
         buildid ++;
         if (bstart + bstep >= leftResult.size()) {
-          bvf.push_back(std::async(std::launch::async , [this, &hashTable = hashTables[buildid], leftColumn, &leftResult, bstart, bend = leftResult.size()]() {
+          bvf.push_back(std::async(std::launch::async , [&hashTable = hashTables[buildid], leftColumn, &leftResult, bstart, bend = leftResult.size()]() {
             hashTable.reserve((bend - bstart) * 2);
             for (uint32_t i = bstart; i < bend; i++) {
               hashTable.emplace(leftColumn[leftResult[i]], i);
@@ -988,7 +1214,7 @@ void Join::run()
           }));
           break;
         }
-        bvf.push_back(std::async(std::launch::async , [this, &hashTable = hashTables[buildid], leftColumn, &leftResult, bstart, bend = bstart + bstep]() {
+        bvf.push_back(std::async(std::launch::async , [&hashTable = hashTables[buildid], leftColumn, &leftResult, bstart, bend = bstart + bstep]() {
           hashTable.reserve((bend - bstart) * 2);
           for (uint32_t i = bstart; i < bend; i++) {
             hashTable.emplace(leftColumn[leftResult[i]], i);
@@ -1002,6 +1228,9 @@ void Join::run()
       }
 
       for_each(bvf.begin(), bvf.end(), [](future<void> &x) { x.wait(); });
+      // for (uint32_t i = 0; i < build_cnt; i++) {
+      //   log_print("hashmap {} size: {}\n", i, hashTables[i].size());
+      // }
     } else {
       hashTables.resize(1);
       hashTables[0].reserve(leftResult.size() * 2);
@@ -1009,13 +1238,13 @@ void Join::run()
         hashTables[0].emplace(leftColumn[leftResult[i]], i);
       }
     }
-#else
+#else   // USE_PARALLEL_BUILD_HASH_TABLE
     hashTable.reserve(left->resultSize * 2);
     for (uint32_t i = 0; i < leftResult.size(); i++) {
       // multi threads
       hashTable.emplace(leftColumn[leftResult[i]], i);
     }
-#endif
+#endif  // USE_PARALLEL_BUILD_HASH_TABLE
 #if PRINT_LOG
     end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
     log_print("Left result size: {}, is range: false, build hashmap time {} ms\n", leftResult.size(), end.count() - tmpms.count());
@@ -1035,32 +1264,91 @@ void Join::run()
         size_t step = (rightResult[1] - rightResult[0] + task_cnt - 1) / task_cnt;
         size_t start = rightResult[0] + step;
         int taskid = 0;
-        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(task_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
-
+        // log_print("task_cnt {}\n", task_cnt);
+        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(task_cnt * build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
         std::vector<std::future<size_t>> vf;
+#if USE_PARALLEL_BUILD_HASH_TABLE
         while (start < rightResult[1]) {
           taskid ++;
           // log_print("split task {} for the probe, start: {}\n", taskid, start);
           if (start + step >= rightResult[1]) {
-            vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
-              for (auto &result : results) {
-                result.reserve(end - start + 1);
-              }
-              for (uint32_t i = start; i < end; i++) {
-                auto rightKey = rightColumn[i];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-                for (auto &hashTable: hashTables) {
+            for (uint32_t ii = 0; ii < build_cnt; ii++) {
+              // log_print("taskid {}, buildid {}, slot {}\n", taskid, ii, taskid * build_cnt + ii);
+              vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, start, end = rightResult[1]]() {
+                for (auto &result : results) {
+                  result.reserve(end - start + 1);
+                }
+                for (uint32_t i = start; i < end; i++) {
+                  auto rightKey = rightColumn[i];
                   auto range = hashTable.equal_range(rightKey);
                   for (auto iter = range.first; iter != range.second; ++iter) {
                     copy2ResultRP(results, iter->second, i);
                   }
                 }
-#else
+                return results[0].size();
+              }));
+            }
+            break;
+          }
+          for (uint32_t ii = 0; ii < build_cnt; ii++) {
+            // log_print("taskid {}, buildid {}, slot {}\n", taskid, ii, taskid * build_cnt + ii);
+            vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, start, end = start + step]() {
+              for (auto &result : results) {
+                result.reserve(end - start + 1);
+              }
+              for (uint32_t i = start; i < end; i++) {
+                auto rightKey = rightColumn[i];
                 auto range = hashTable.equal_range(rightKey);
                 for (auto iter = range.first; iter != range.second; ++iter) {
                   copy2ResultRP(results, iter->second, i);
                 }
-#endif
+              }
+              return results[0].size();
+            }));
+          }
+          start += step;
+        }
+        for (uint32_t ii = 1; ii < build_cnt; ii++) {
+          // log_print("taskid 0, buildid {}, slot {}\n", ii, ii);
+          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[0] + step]() {
+            for (auto &result : results) {
+              result.reserve(end - start + 1);
+            }
+            for (uint32_t i = start; i < end; i++) {
+              auto rightKey = rightColumn[i];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultRP(results, iter->second, i);
+              }
+            }
+            return results[0].size();
+          }));
+        }
+        for (auto &result : intermediateResults) {
+          result.reserve(step);
+        }
+        for (uint32_t i = rightResult[0]; i < rightResult[0] + step; i++) {
+          auto rightKey = rightColumn[i];
+          auto range = hashTables[0].equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultR(iter->second, i);
+          }
+        }
+#else   // USE_PARALLEL_BUILD_HASH_TABLE
+        while (start < rightResult[1]) {
+          taskid ++;
+          // log_print("split task {} for the probe, start: {}\n", taskid, start);
+          if (start + step >= rightResult[1]) {
+            vf.push_back(std::async(std::launch::async, [this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
+              for (auto &result : results) {
+                result.reserve(end - start + 1);
+              }
+              for (uint32_t i = start; i < end; i++) {
+                auto rightKey = rightColumn[i];
+                auto range = hashTable.equal_range(rightKey);
+                for (auto iter = range.first; iter != range.second; ++iter) {
+                  copy2ResultRP(results, iter->second, i);
+                }
               }
               return results[0].size();
             }));
@@ -1072,19 +1360,10 @@ void Join::run()
             }
             for (uint32_t i = start; i < end; i++) {
               auto rightKey = rightColumn[i];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-                for (auto &hashTable: hashTables) {
-                  auto range = hashTable.equal_range(rightKey);
-                  for (auto iter = range.first; iter != range.second; ++iter) {
-                    copy2ResultRP(results, iter->second, i);
-                  }
-                }
-#else
               auto range = hashTable.equal_range(rightKey);
               for (auto iter = range.first; iter != range.second; ++iter) {
                 copy2ResultRP(results, iter->second, i);
               }
-#endif
             }
             return results[0].size();
           }));
@@ -1095,26 +1374,20 @@ void Join::run()
         }
         for (uint32_t i = rightResult[0]; i < rightResult[0] + step; i++) {
           auto rightKey = rightColumn[i];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-          for (auto &hashTable: hashTables) {
-            auto range = hashTable.equal_range(rightKey);
-            for (auto iter = range.first; iter != range.second; ++iter) {
-              copy2ResultR(iter->second, i);
-            }
-          }
-#else
           auto range = hashTable.equal_range(rightKey);
           for (auto iter = range.first; iter != range.second; ++iter) {
             copy2ResultR(iter->second, i);
           }
-#endif
         }
+#endif  // USE_PARALLEL_BUILD_HASH_TABLE
         // wait for the results
         size_t pcnt = 0;
         for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
-          pcnt += x.get();
-          // log_print("subtasks probe get {} results\n", pcnt);
+          size_t tmp = x.get();
+          pcnt += tmp;
+          // log_print("subtasks probe get {} results, x: {}\n", pcnt, tmp);
         });
+        log_print("subtask 0 probe get {} results\n", resultSize);
         resultSize += pcnt;
 #if PRINT_LOG
         // end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
@@ -1128,28 +1401,107 @@ void Join::run()
             intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
           }
         }
-      } else {
+      } else {  // result size < MIN_PROBE_ITEM_CNT
+#if USE_PARALLEL_BUILD_HASH_TABLE
+        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
+        std::vector<std::future<size_t>> vf;
+        for (uint32_t ii = 1; ii < build_cnt; ii++) {
+          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[1]]() {
+            for (auto &result : results) {
+              result.reserve(end - start + 1);
+            }
+            for (uint32_t i = start; i < end; i++) {
+              auto rightKey = rightColumn[i];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultRP(results, iter->second, i);
+              }
+            }
+            return results[0].size();
+          }));
+        }
+        for (auto &result : intermediateResults) {
+          result.reserve(rightResult[1] - rightResult[0]);
+        }
+        for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
+          auto rightKey = rightColumn[i];
+          auto range = hashTables[0].equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultR(iter->second, i);
+          }
+        }
+        // merge
+        size_t pcnt = 0;
+        for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+          pcnt += x.get();
+          // log_print("subtasks probe get {} results\n", pcnt);
+        });
+        resultSize += pcnt;
+        for (int i = 0; i < intermediateResults.size(); i++) {
+          intermediateResults[i].reserve(resultSize);
+          for (int j = 1; j < parallelResults.size(); j++) {
+            intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
+          }
+        }
+#else   // USE_PARALLEL_BUILD_HASH_TABLE
         for (auto &result : intermediateResults) {
           result.reserve(rightResult[1] - rightResult[0] + 1);
         }
         for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
           auto rightKey = rightColumn[i];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-          for (auto &hashTable: hashTables) {
-            auto range = hashTable.equal_range(rightKey);
-            for (auto iter = range.first; iter != range.second; ++iter) {
-              copy2ResultR(iter->second, i);
-            }
-          }
-#else
           auto range = hashTable.equal_range(rightKey);
           for (auto iter = range.first; iter != range.second; ++iter) {
             copy2ResultR(iter->second, i);
           }
-#endif
+        }
+#endif  // USE_PARALLEL_BUILD_HASH_TABLE
+      }
+#else   // USE_PARALLEL_PROBE
+#if USE_PARALLEL_BUILD_HASH_TABLE
+      std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
+      std::vector<std::future<size_t>> vf;
+      for (uint32_t ii = 1; ii < build_cnt; ii++) {
+        vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[1]]() {
+          for (auto &result : results) {
+            result.reserve(end - start + 1);
+          }
+          for (uint32_t i = start; i < end; i++) {
+            auto rightKey = rightColumn[i];
+            auto range = hashTable.equal_range(rightKey);
+            for (auto iter = range.first; iter != range.second; ++iter) {
+              copy2ResultRP(results, iter->second, i);
+            }
+          }
+          return results[0].size();
+        }));
+      }
+      for (auto &result : intermediateResults) {
+        result.reserve(step);
+      }
+      for (uint32_t i = rightResult[0]; i < rightResult[0] + step; i++) {
+        auto rightKey = rightColumn[i];
+        auto range = hashTables[0].equal_range(rightKey);
+        for (auto iter = range.first; iter != range.second; ++iter) {
+          copy2ResultR(iter->second, i);
+        }
+      }
+      // merge
+      size_t pcnt = 0;
+      for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+        pcnt += x.get();
+        // log_print("subtasks probe get {} results\n", pcnt);
+      });
+      resultSize += pcnt;
+      for (int i = 0; i < intermediateResults.size(); i++) {
+        intermediateResults[i].reserve(resultSize);
+        for (int j = 1; j < parallelResults.size(); j++) {
+          intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
         }
       }
 #else
+      for (auto &result : intermediateResults) {
+        result.reserve(rightResult[1] - rightResult[0] + 1);
+      }
       for (uint32_t i = rightResult[0]; i < rightResult[1]; i++) {
         auto rightKey = rightColumn[i];
         auto range = hashTable.equal_range(rightKey);
@@ -1158,7 +1510,8 @@ void Join::run()
         }
       }
 #endif
-    } else {
+#endif
+    } else {  // left range: false, right range: false
       auto &rightResult = rightResults[rightColId];
 #if PRINT_LOG
       log_print("right result size: {}, is range: false\n", rightResult.size());
@@ -1170,32 +1523,86 @@ void Join::run()
         size_t step = (rightResult.size() + task_cnt - 1) / task_cnt;
         size_t start = step;
         int taskid = 0;
-        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(task_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
-
+        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(task_cnt * build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
         std::vector<std::future<size_t>> vf;
+#if USE_PARALLEL_BUILD_HASH_TABLE
         while (start < rightResult.size()) {
           taskid ++;
-          // log_print("split task {} for the probe, start: {}\n", taskid, start);
           if (start + step >= rightResult.size()) {
-            vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
-              for (auto &result : results) {
-                result.reserve(end - start + 1);
-              }
-              for (uint32_t i = start; i < end; i++) {
-                auto rightKey = rightColumn[rightResult[i]];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-                for (auto &hashTable: hashTables) {
+            for (uint32_t ii = 0; ii < build_cnt; ii++) {
+              vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, &rightResult, start, end = rightResult.size()]() {
+                for (auto &result: results) {
+                  result.reserve(end - start + 1);
+                }
+                for (uint32_t i = start; i < end; i++) {
+                  auto rightKey = rightColumn[rightResult[i]];
                   auto range = hashTable.equal_range(rightKey);
                   for (auto iter = range.first; iter != range.second; ++iter) {
                     copy2ResultP(results, iter->second, i);
                   }
                 }
-#else
+                return results[0].size();
+              }));
+            }
+            break;
+          }
+          for (uint32_t ii = 0; ii < build_cnt; ii++) {
+            vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, &rightResult, start, end = start + step]() {
+              for (auto &result: results) {
+                  result.reserve(end - start + 1);
+                }
+                for (uint32_t i = start; i < end; i++) {
+                  auto rightKey = rightColumn[rightResult[i]];
+                  auto range = hashTable.equal_range(rightKey);
+                  for (auto iter = range.first; iter != range.second; ++iter) {
+                    copy2ResultP(results, iter->second, i);
+                  }
+                }
+                return results[0].size();
+            }));
+          }
+          start += step;
+        }
+        for (uint32_t ii = 1; ii < build_cnt; ii++) {
+          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = step]() {
+            for (auto &result: results) {
+              result.reserve(end - start + 1);
+            }
+            for (uint32_t i = start; i < end; i++) {
+              auto rightKey = rightColumn[rightResult[i]];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultP(results, iter->second, i);
+              }
+            }
+            return results[0].size();
+          }));
+        }
+        for (auto &result : intermediateResults) {
+          result.reserve(step);
+        }
+        for (uint32_t i = 0; i < step; i++) {
+          auto rightKey = rightColumn[rightResult[i]];
+          auto range = hashTables[0].equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2Result(iter->second, i);
+          }
+        }
+#else   // USE_PARALLEL_BUILD_HASH_TABLE
+        while (start < rightResult.size()) {
+          taskid ++;
+          // log_print("split task {} for the probe, start: {}\n", taskid, start);
+          if (start + step >= rightResult.size()) {
+            vf.push_back(std::async(std::launch::async, [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
+              for (auto &result : results) {
+                result.reserve(end - start + 1);
+              }
+              for (uint32_t i = start; i < end; i++) {
+                auto rightKey = rightColumn[rightResult[i]];
                 auto range = hashTable.equal_range(rightKey);
                 for (auto iter = range.first; iter != range.second; ++iter) {
                   copy2ResultP(results, iter->second, i);
                 }
-#endif
               }
               return results[0].size();
             }));
@@ -1207,19 +1614,10 @@ void Join::run()
             }
             for (uint32_t i = start; i < end; i++) {
               auto rightKey = rightColumn[rightResult[i]];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-              for (auto &hashTable: hashTables) {
-                auto range = hashTable.equal_range(rightKey);
-                for (auto iter = range.first; iter != range.second; ++iter) {
-                  copy2ResultP(results, iter->second, i);
-                }
-              }
-#else
               auto range = hashTable.equal_range(rightKey);
               for (auto iter = range.first; iter != range.second; ++iter) {
                 copy2ResultP(results, iter->second, i);
               }
-#endif
             }
             return results[0].size();
           }));
@@ -1230,20 +1628,12 @@ void Join::run()
         }
         for (uint32_t i = 0; i < step; i++) {
           auto rightKey = rightColumn[rightResult[i]];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-          for (auto &hashTable: hashTables) {
-            auto range = hashTable.equal_range(rightKey);
-            for (auto iter = range.first; iter != range.second; ++iter) {
-              copy2Result(iter->second, i);
-            }
-          }
-#else
           auto range = hashTable.equal_range(rightKey);
           for (auto iter = range.first; iter != range.second; ++iter) {
             copy2Result(iter->second, i);
           }
-#endif
         }
+#endif  // USE_PARALLEL_BUILD_HASH_TABLE
         // wait for the results
         size_t pcnt = 0;
         for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
@@ -1264,34 +1654,102 @@ void Join::run()
           }
         }
       } else {
+#if USE_PARALLEL_BUILD_HASH_TABLE
+        std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
+        std::vector<std::future<size_t>> vf;
+        for (uint32_t ii = 1; ii < build_cnt; ii++) {
+          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = rightResult.size()]() {
+            for (auto &result: results) {
+              result.reserve(end - start + 1);
+            }
+            for (uint32_t i = start; i < end; i++) {
+              auto rightKey = rightColumn[rightResult[i]];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultP(results, iter->second, i);
+              }
+            }
+            return results[0].size();
+          }));
+        }
+        for (auto &result : intermediateResults) {
+          result.reserve(rightResult.size());
+        }
         for (uint32_t i = 0; i < rightResult.size(); i++) {
           auto rightKey = rightColumn[rightResult[i]];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-          for (auto &hashTable: hashTables) {
-            auto range = hashTable.equal_range(rightKey);
-            for (auto iter = range.first; iter != range.second; ++iter) {
-              copy2Result(iter->second, i);
-            }
+          auto range = hashTables[0].equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2Result(iter->second, i);
           }
-#else
+        }
+        // merge results
+        size_t pcnt = 0;
+        for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+          pcnt += x.get();
+          // log_print("subtasks probe get {} results\n", pcnt);
+        });
+        resultSize += pcnt;
+        for (int i = 0; i < intermediateResults.size(); i++) {
+          intermediateResults[i].reserve(resultSize);
+          for (int j = 1; j < parallelResults.size(); j++) {
+            intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
+          }
+        }
+#else   // USE_PARALLEL_BUILD_HASH_TABLE
+        for (uint32_t i = 0; i < rightResult.size(); i++) {
+          auto rightKey = rightColumn[rightResult[i]];
           auto range = hashTable.equal_range(rightKey);
           for (auto iter = range.first; iter != range.second; ++iter) {
             copy2Result(iter->second, i);
           }
-#endif
+        }
+#endif  // USE_PARALLEL_BUILD_HASH_TABLE
+      }
+#else // USE_PARALLEL_PROBE
+#if USE_PARALLEL_BUILD_HASH_TABLE
+      std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
+      std::vector<std::future<size_t>> vf;
+      for (uint32_t ii = 1; ii < build_cnt; ii++) {
+        vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = rightResult.size()]() {
+          for (auto &result: results) {
+            result.reserve(end - start + 1);
+          }
+          for (uint32_t i = start; i < end; i++) {
+            auto rightKey = rightColumn[rightResult[i]];
+            auto range = hashTable.equal_range(rightKey);
+            for (auto iter = range.first; iter != range.second; ++iter) {
+              copy2ResultP(results, iter->second, i);
+            }
+          }
+          return results[0].size();
+        }));
+      }
+      for (auto &result : intermediateResults) {
+        result.reserve(rightResult.size());
+      }
+      for (uint32_t i = 0; i < rightResult.size(); i++) {
+        auto rightKey = rightColumn[i];
+        auto range = hashTables[0].equal_range(rightKey);
+        for (auto iter = range.first; iter != range.second; ++iter) {
+          copy2Result(iter->second, i);
+        }
+      }
+      // merge results
+      size_t pcnt = 0;
+      for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+        pcnt += x.get();
+        // log_print("subtasks probe get {} results\n", pcnt);
+      });
+      resultSize += pcnt;
+      for (int i = 0; i < intermediateResults.size(); i++) {
+        intermediateResults[i].reserve(resultSize);
+        for (int j = 1; j < parallelResults.size(); j++) {
+          intermediateResults[i].insert(intermediateResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
         }
       }
 #else
       for (uint32_t i = 0; i < rightResult.size(); i++) {
         auto rightKey = rightColumn[rightResult[i]];
-#if USE_PARALLEL_BUILD_HASH_TABLE
-        for (auto &hashTable: hashTables) {
-          auto range = hashTable.equal_range(rightKey);
-          for (auto iter = range.first; iter != range.second; ++iter) {
-            copy2Result(iter->second, i);
-          }
-        }
-#else
         auto range = hashTable.equal_range(rightKey);
         for (auto iter = range.first; iter != range.second; ++iter) {
           copy2Result(iter->second, i);
