@@ -407,7 +407,7 @@ void Join::run()
   // Run
 {
 #if USE_ASYNC_JOIN
-  auto al = std::async(std::launch::async , [this]() { left->run(); });
+  auto al = std::async(std::launch::async | std::launch::deferred , [this]() { left->run(); });
   right->run();
   al.get();
 #else
@@ -612,7 +612,7 @@ void Join::run()
         buildid ++;
         if (bstart + bstep >= leftResult[1]) {
           // log_print("split task {} for the probe, start: {}, bend {}\n", buildid, bstart, leftResult[1]);
-          bvf.push_back(std::async(std::launch::async, [&hashTable = hashTables[buildid], leftColumn, bstart, bend = leftResult[1]]() {
+          bvf.push_back(std::async(std::launch::async | std::launch::deferred, [&hashTable = hashTables[buildid], leftColumn, bstart, bend = leftResult[1]]() {
             hashTable.reserve((bend - bstart) * 2);
             for (uint32_t i = bstart; i < bend; i++) {
               hashTable.emplace(leftColumn[i], i);
@@ -621,7 +621,7 @@ void Join::run()
           break;
         }
         // log_print("split task {} for the probe, start: {}, bend {}\n", buildid, bstart, bstart + bstep);
-        bvf.push_back(std::async(std::launch::async, [&hashTable = hashTables[buildid], leftColumn, bstart, bend = bstart + bstep]() {
+        bvf.push_back(std::async(std::launch::async | std::launch::deferred, [&hashTable = hashTables[buildid], leftColumn, bstart, bend = bstart + bstep]() {
           hashTable.reserve((bend - bstart) * 2);
           for (uint32_t i = bstart; i < bend; i++) {
             hashTable.emplace(leftColumn[i], i);
@@ -690,7 +690,7 @@ void Join::run()
           if (start + step >= rightResult[1]) {
             for (uint32_t ii = 0; ii < build_cnt; ii++) {
               // log_print("l taskid {}, buildid {}, slot {}\n", taskid, ii, taskid * build_cnt + ii);
-              vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, start, end = rightResult[1]]() {
+              vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, start, end = rightResult[1]]() {
                 for (auto &result: results) {
                   result.reserve(end - start + 1);
                 }
@@ -708,7 +708,7 @@ void Join::run()
           }
           for (uint32_t ii = 0; ii < build_cnt; ii++) {
             // log_print("n taskid {}, buildid {}, slot {}\n", taskid, ii, taskid * build_cnt + ii);
-            vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, start, end = start + step]() {
+            vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, start, end = start + step]() {
               for (auto &result: results) {
                 result.reserve(end - start + 1);
               }
@@ -727,7 +727,7 @@ void Join::run()
 
         for (uint32_t ii = 1; ii < build_cnt; ii++) {
           // log_print("taskid {}, buildid {}, slot {}\n", 0, ii, ii);
-          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[0] + step]() {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[0] + step]() {
             for (auto &result: results) {
               result.reserve(end - start + 1);
             }
@@ -757,7 +757,7 @@ void Join::run()
           taskid ++;
           // log_print("split task {} for the probe, start: {}\n", taskid, start);
           if (start + step >= rightResult[1]) {
-            vf.push_back(std::async(std::launch::async, [this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
+            vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
               for (auto &result : results) {
                 result.reserve(end - start + 1);
               }
@@ -772,7 +772,7 @@ void Join::run()
             }));
             break;
           }
-          vf.push_back(std::async(std::launch::async, [this, &results = parallelResults[taskid], rightColumn, start, end = start + step]() {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &results = parallelResults[taskid], rightColumn, start, end = start + step]() {
             for (auto &result : results) {
               result.reserve(end - start + 1);
             }
@@ -824,7 +824,7 @@ void Join::run()
         std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
         std::vector<std::future<size_t>> vf;
         for (uint32_t ii = 1; ii < build_cnt; ii++) {
-          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[1]]() {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[1]]() {
             for (auto &result : results) {
               result.reserve(end - start + 1);
             }
@@ -879,7 +879,7 @@ void Join::run()
       std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
         std::vector<std::future<size_t>> vf;
         for (uint32_t ii = 1; ii < build_cnt; ii++) {
-          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[1]]() {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[1]]() {
             for (auto &result : results) {
               result.reserve(end - start + 1);
             }
@@ -952,7 +952,7 @@ void Join::run()
           taskid ++;
           if (start + step >= rightResult.size()) {
             for (uint32_t ii = 0; ii < build_cnt; ii++) {
-              vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, &rightResult, start, end = rightResult.size()]() {
+              vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, &rightResult, start, end = rightResult.size()]() {
                 for (auto &result: results) {
                   result.reserve(end - start + 1);
                 }
@@ -969,7 +969,7 @@ void Join::run()
             break;
           }
           for (uint32_t ii = 0; ii < build_cnt; ii++) {
-            vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, &rightResult, start, end = start + step]() {
+            vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, &rightResult, start, end = start + step]() {
               for (auto &result: results) {
                 result.reserve(end - start + 1);
               }
@@ -986,7 +986,7 @@ void Join::run()
           start += step;
         }
         for (uint32_t ii = 1; ii < build_cnt; ii++) {
-          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = step]() {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = step]() {
             for (auto &result: results) {
               result.reserve(end - start + 1);
             }
@@ -1015,7 +1015,7 @@ void Join::run()
           taskid ++;
           // log_print("split task {} for the probe, start: {}\n", taskid, start);
           if (start + step >= rightResult.size()) {
-            vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
+            vf.push_back(std::async(std::launch::async | std::launch::deferred , [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
               for (auto &result : results) {
                 result.reserve(end - start + 1);
               }
@@ -1030,7 +1030,7 @@ void Join::run()
             }));
             break;
           }
-          vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = start + step]() {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred , [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = start + step]() {
             for (auto &result : results) {
               result.reserve(end - start + 1);
             }
@@ -1080,7 +1080,7 @@ void Join::run()
         std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
         std::vector<std::future<size_t>> vf;
         for (uint32_t ii = 1; ii < build_cnt; ii++) {
-          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = rightResult.size()]() {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = rightResult.size()]() {
             for (auto &result: results) {
               result.reserve(end - start + 1);
             }
@@ -1134,7 +1134,7 @@ void Join::run()
       std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
       std::vector<std::future<size_t>> vf;
       for (uint32_t ii = 1; ii < build_cnt; ii++) {
-        vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = rightResult.size()]() {
+        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = rightResult.size()]() {
           for (auto &result: results) {
             result.reserve(end - start + 1);
           }
@@ -1206,7 +1206,7 @@ void Join::run()
       while (bstart < leftResult.size()) {
         buildid ++;
         if (bstart + bstep >= leftResult.size()) {
-          bvf.push_back(std::async(std::launch::async , [&hashTable = hashTables[buildid], leftColumn, &leftResult, bstart, bend = leftResult.size()]() {
+          bvf.push_back(std::async(std::launch::async | std::launch::deferred , [&hashTable = hashTables[buildid], leftColumn, &leftResult, bstart, bend = leftResult.size()]() {
             hashTable.reserve((bend - bstart) * 2);
             for (uint32_t i = bstart; i < bend; i++) {
               hashTable.emplace(leftColumn[leftResult[i]], i);
@@ -1214,7 +1214,7 @@ void Join::run()
           }));
           break;
         }
-        bvf.push_back(std::async(std::launch::async , [&hashTable = hashTables[buildid], leftColumn, &leftResult, bstart, bend = bstart + bstep]() {
+        bvf.push_back(std::async(std::launch::async | std::launch::deferred , [&hashTable = hashTables[buildid], leftColumn, &leftResult, bstart, bend = bstart + bstep]() {
           hashTable.reserve((bend - bstart) * 2);
           for (uint32_t i = bstart; i < bend; i++) {
             hashTable.emplace(leftColumn[leftResult[i]], i);
@@ -1274,7 +1274,7 @@ void Join::run()
           if (start + step >= rightResult[1]) {
             for (uint32_t ii = 0; ii < build_cnt; ii++) {
               // log_print("taskid {}, buildid {}, slot {}\n", taskid, ii, taskid * build_cnt + ii);
-              vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, start, end = rightResult[1]]() {
+              vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, start, end = rightResult[1]]() {
                 for (auto &result : results) {
                   result.reserve(end - start + 1);
                 }
@@ -1292,7 +1292,7 @@ void Join::run()
           }
           for (uint32_t ii = 0; ii < build_cnt; ii++) {
             // log_print("taskid {}, buildid {}, slot {}\n", taskid, ii, taskid * build_cnt + ii);
-            vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, start, end = start + step]() {
+            vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, start, end = start + step]() {
               for (auto &result : results) {
                 result.reserve(end - start + 1);
               }
@@ -1310,7 +1310,7 @@ void Join::run()
         }
         for (uint32_t ii = 1; ii < build_cnt; ii++) {
           // log_print("taskid 0, buildid {}, slot {}\n", ii, ii);
-          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[0] + step]() {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[0] + step]() {
             for (auto &result : results) {
               result.reserve(end - start + 1);
             }
@@ -1339,7 +1339,7 @@ void Join::run()
           taskid ++;
           // log_print("split task {} for the probe, start: {}\n", taskid, start);
           if (start + step >= rightResult[1]) {
-            vf.push_back(std::async(std::launch::async, [this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
+            vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &results = parallelResults[taskid], rightColumn, start, end = rightResult[1]]() {
               for (auto &result : results) {
                 result.reserve(end - start + 1);
               }
@@ -1354,7 +1354,7 @@ void Join::run()
             }));
             break;
           }
-          vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, start, end = start + step]() {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred , [this, &results = parallelResults[taskid], rightColumn, start, end = start + step]() {
             for (auto &result : results) {
               result.reserve(end - start + 1);
             }
@@ -1406,7 +1406,7 @@ void Join::run()
         std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
         std::vector<std::future<size_t>> vf;
         for (uint32_t ii = 1; ii < build_cnt; ii++) {
-          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[1]]() {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[1]]() {
             for (auto &result : results) {
               result.reserve(end - start + 1);
             }
@@ -1461,7 +1461,7 @@ void Join::run()
       std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
       std::vector<std::future<size_t>> vf;
       for (uint32_t ii = 1; ii < build_cnt; ii++) {
-        vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[1]]() {
+        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, start = rightResult[0], end = rightResult[1]]() {
           for (auto &result : results) {
             result.reserve(end - start + 1);
           }
@@ -1530,7 +1530,7 @@ void Join::run()
           taskid ++;
           if (start + step >= rightResult.size()) {
             for (uint32_t ii = 0; ii < build_cnt; ii++) {
-              vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, &rightResult, start, end = rightResult.size()]() {
+              vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, &rightResult, start, end = rightResult.size()]() {
                 for (auto &result: results) {
                   result.reserve(end - start + 1);
                 }
@@ -1547,7 +1547,7 @@ void Join::run()
             break;
           }
           for (uint32_t ii = 0; ii < build_cnt; ii++) {
-            vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, &rightResult, start, end = start + step]() {
+            vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[taskid * build_cnt + ii], rightColumn, &rightResult, start, end = start + step]() {
               for (auto &result: results) {
                   result.reserve(end - start + 1);
                 }
@@ -1564,7 +1564,7 @@ void Join::run()
           start += step;
         }
         for (uint32_t ii = 1; ii < build_cnt; ii++) {
-          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = step]() {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = step]() {
             for (auto &result: results) {
               result.reserve(end - start + 1);
             }
@@ -1593,7 +1593,7 @@ void Join::run()
           taskid ++;
           // log_print("split task {} for the probe, start: {}\n", taskid, start);
           if (start + step >= rightResult.size()) {
-            vf.push_back(std::async(std::launch::async, [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
+            vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = rightResult.size()]() {
               for (auto &result : results) {
                 result.reserve(end - start + 1);
               }
@@ -1608,7 +1608,7 @@ void Join::run()
             }));
             break;
           }
-          vf.push_back(std::async(std::launch::async , [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = start + step]() {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred , [this, &results = parallelResults[taskid], rightColumn, &rightResult, start, end = start + step]() {
             for (auto &result : results) {
               result.reserve(end - start + 1);
             }
@@ -1658,7 +1658,7 @@ void Join::run()
         std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
         std::vector<std::future<size_t>> vf;
         for (uint32_t ii = 1; ii < build_cnt; ii++) {
-          vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = rightResult.size()]() {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = rightResult.size()]() {
             for (auto &result: results) {
               result.reserve(end - start + 1);
             }
@@ -1710,7 +1710,7 @@ void Join::run()
       std::vector<std::vector<std::vector<uint32_t>>> parallelResults(build_cnt, std::vector<std::vector<uint32_t>>(intermediateResults.size()));
       std::vector<std::future<size_t>> vf;
       for (uint32_t ii = 1; ii < build_cnt; ii++) {
-        vf.push_back(std::async(std::launch::async, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = rightResult.size()]() {
+        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &results = parallelResults[ii], rightColumn, &rightResult, start = 0, end = rightResult.size()]() {
           for (auto &result: results) {
             result.reserve(end - start + 1);
           }
@@ -1856,7 +1856,7 @@ void Checksum::run()
       uint64_t *column = input->getRelation(sInfo.binding)->columns[sInfo.colId];
       // log_print("result size num: {}, column addr: {}, colId: {}\n", results[0].size(), fmt::ptr(column), colId);
 
-      vf.push_back(std::async(std::launch::async , [&sInfo, &resulti, column, this]() {
+      vf.push_back(std::async(std::launch::async | std::launch::deferred , [&sInfo, &resulti, column, this]() {
         uint64_t sum = 0;
         for (auto i : resulti) {
           sum += column[i];
