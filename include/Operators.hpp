@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <vector>
 #include <set>
+#include <map>
 #include "Relation.hpp"
 #include "Parser.hpp"
 //---------------------------------------------------------------------------
@@ -111,13 +112,19 @@ class Join : public Operator {
   PredicateInfo& pInfo;
   /// Copy tuple to result
   void copy2Result(uint64_t leftId,uint64_t rightId);
+  void copy2ResultP(std::vector<std::vector<uint64_t>> &result, uint64_t leftId,uint64_t rightId);
   /// Create mapping for bindings
   void createMappingForBindings();
 
   using HT=std::unordered_multimap<uint64_t,uint64_t>;
 
+#if USE_PARALLEL_BUILD_HASH_TABLE
+  /// The hash table for the join
+  std::vector<HT> hashTables;
+#else
   /// The hash table for the join
   HT hashTable;
+#endif
   /// Columns that have to be materialized
   std::unordered_set<SelectInfo> requestedColumns;
   /// Left/right columns that have been requested
@@ -171,6 +178,8 @@ class Checksum : public Operator {
   std::unique_ptr<Operator> input;
   /// The join predicate info
   std::vector<SelectInfo>& colInfo;
+
+  std::map<SelectInfo, uint64_t> sumsCache; 
 
   public:
   std::vector<uint64_t> checkSums;

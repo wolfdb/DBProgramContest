@@ -1,5 +1,6 @@
 #include <iostream>
 #include <future>
+#include <memory>
 #include "Joiner.hpp"
 #include "Parser.hpp"
 #include "Log.hpp"
@@ -53,6 +54,7 @@ int main(int argc, char* argv[]) {
    milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
    while (getline(cin, line)) {
       if (line == "F") {
+         batch ++;
          continue; // End of a batch
       }
       actually_query = Joiner::query_count;
