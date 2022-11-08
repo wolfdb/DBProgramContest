@@ -6,6 +6,7 @@
 #include "Consts.hpp"
 
 using namespace std;
+using namespace std::chrono;
 
 struct QueryInfoWrapper {
    QueryInfo query;
@@ -64,13 +65,15 @@ int main(int argc, char* argv[]) {
    QueryInfo i;
    work_load = joiner.relations[0].rowCount;
    int32_t batch = 0;
+   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
    while (getline(cin, line)) {
       if (line == "F") {
          batch ++;
          continue; // End of a batch
       }
       actually_query = Joiner::query_count;
-      log_print("batch: {}\n", batch);
+      milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+      log_print("batch: {}, before this query, execution time: {} ms\n", batch, end.count() - start.count());
       i.parseQuery(line);
       cout << joiner.join(i);
    }

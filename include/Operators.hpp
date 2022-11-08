@@ -8,9 +8,6 @@
 #include <vector>
 #include <set>
 #include <map>
-#if USE_PARALLEL_BUILD_HASH_TABLE
-#include <tbb/concurrent_unordered_map.h>
-#endif
 #include "Relation.hpp"
 #include "Parser.hpp"
 //---------------------------------------------------------------------------

@@ -33,3 +33,5 @@ TODO:
 [x] split a thread to do filter scan, if the other operator return 0 result, kill the filter scan thread, this is a bad idea, will cause heap-use-after-free exception
 [] bushy tree
 [x] get rid of thread_pool in Checksum operator
+[x] tcmalloc/jemalloc
+[] xsimd/highway

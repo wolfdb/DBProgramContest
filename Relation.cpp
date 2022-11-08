@@ -85,7 +85,7 @@ void Relation::buildHistogram(int idx)
   uint64_t tmp_min = column[0];
   uint64_t pre = column[0];
   uint64_t cnt = 1;
-  bool sorted = true;
+  bool sorted = false;
   bool asc = false;
   bool desc = false;
   for (int i = 1; i < this->sampleCount; i++) {
@@ -183,6 +183,7 @@ void Relation::buildHistogram(int idx)
   }
 #endif
 
+#if 0
   if (this->sorts[idx] == Sorted::False) {
     auto h = make_histogram(axis::regular<>(HISTOGRAM_BUCKET_CNT, this->sample_mins[idx], this->sample_maxs[idx]));
     auto &sample_distinctVal = this->sample_distinctVals[idx];
@@ -192,6 +193,7 @@ void Relation::buildHistogram(int idx)
     }
     this->sample_histograms[idx].hist_ = std::move(h);
   }
+#endif
 }
 //---------------------------------------------------------------------------
 void Relation::printHistogram(int idx)
