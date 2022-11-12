@@ -92,7 +92,86 @@ void FilterScan::run()
       filterid ++;
       if (start + step >= relation.rowCount) {
         vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &results = parallelResults[filterid], start, end = relation.rowCount]() {
-          bool pass=true;
+          if (filters.size() == 1) {
+            auto &f = filters[0];
+            auto constant=f.constant;
+            auto compareCol=relation.columns[f.filterColumn.colId];
+            switch (f.comparison)
+            {
+              case FilterInfo::Comparison::Equal: {
+                for (uint64_t i = start; i < end; i++) {
+                  if (compareCol[i]==constant)
+                    copy2ResultP(results, i);
+                }
+                break;
+              }
+              case FilterInfo::Comparison::Greater: {
+                for (uint64_t i = start; i < end; i++) {
+                  if (compareCol[i] > constant)
+                    copy2ResultP(results, i);
+                }
+                break;
+              }
+
+              case FilterInfo::Comparison::Less: {
+                for (uint64_t i = start; i < end; i++) {
+                  if (compareCol[i] < constant)
+                    copy2ResultP(results, i);
+                }
+                break;
+              }
+              default:
+                break;
+            }
+          } else {
+            bool pass=true;
+            for (uint64_t i = start; i < end; i++) {
+              for (auto& f : filters) {
+                pass&=applyFilter(i,f);
+              }
+              if (pass)
+                copy2ResultP(results, i);
+              pass = true;
+            }
+          }
+          return results[0].size();
+        }));
+        break;
+      }
+      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &results = parallelResults[filterid], start, end = start + step]() {
+        if (filters.size() == 1) {
+          auto &f = filters[0];
+          auto constant=f.constant;
+          auto compareCol=relation.columns[f.filterColumn.colId];
+          switch (f.comparison)
+          {
+            case FilterInfo::Comparison::Equal: {
+              for (uint64_t i = start; i < end; i++) {
+                if (compareCol[i]==constant)
+                  copy2ResultP(results, i);
+              }
+              break;
+            }
+            case FilterInfo::Comparison::Greater: {
+              for (uint64_t i = start; i < end; i++) {
+                if (compareCol[i] > constant)
+                  copy2ResultP(results, i);
+              }
+              break;
+            }
+
+            case FilterInfo::Comparison::Less: {
+              for (uint64_t i = start; i < end; i++) {
+                if (compareCol[i] < constant)
+                  copy2ResultP(results, i);
+              }
+              break;
+            }
+            default:
+              break;
+          }
+        } else {
+          bool pass = true;
           for (uint64_t i = start; i < end; i++) {
             for (auto& f : filters) {
               pass&=applyFilter(i,f);
@@ -101,31 +180,52 @@ void FilterScan::run()
               copy2ResultP(results, i);
             pass = true;
           }
-          return results[0].size();
-        }));
-        break;
-      }
-      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &results = parallelResults[filterid], start, end = start + step]() {
-        bool pass = true;
-        for (uint64_t i = start; i < end; i++) {
-          for (auto& f : filters) {
-            pass&=applyFilter(i,f);
-          }
-          if (pass)
-            copy2ResultP(results, i);
-          pass = true;
         }
         return results[0].size();
       }));
       start += step;
     }
-    for (uint64_t i = 0; i < step; i++) {
-      bool pass=true;
-      for (auto& f : filters) {
-        pass&=applyFilter(i,f);
+    if (filters.size() == 1) {
+      auto &f = filters[0];
+      auto constant=f.constant;
+      auto compareCol=relation.columns[f.filterColumn.colId];
+      switch (f.comparison)
+      {
+        case FilterInfo::Comparison::Equal: {
+          for (uint64_t i = 0; i < step; i++) {
+            if (compareCol[i] == constant)
+              copy2Result(i);
+          }
+          break;
+        }
+        case FilterInfo::Comparison::Greater: {
+          for (uint64_t i = 0; i < step; i++) {
+            if (compareCol[i] > constant)
+              copy2Result(i);
+          }
+          break;
+        }
+
+        case FilterInfo::Comparison::Less: {
+          for (uint64_t i = 0; i < step; i++) {
+            if (compareCol[i] < constant)
+              copy2Result(i);
+          }
+          break;
+        }
+        default:
+          break;
       }
-      if (pass)
-        copy2Result(i);
+    } else {
+      bool pass=true;
+      for (uint64_t i = 0; i < step; i++) {
+        for (auto& f : filters) {
+          pass&=applyFilter(i,f);
+        }
+        if (pass)
+          copy2Result(i);
+        pass = true;
+      }
     }
 
     // wait and merge the result
