@@ -56,6 +56,11 @@ void FilterScan::copy2Result(uint64_t id)
     tmpResults[cId].push_back(inputData[cId][id]);
   ++resultSize;
 }
+void FilterScan::copy2ResultP(std::vector<std::vector<uint64_t>> &result, uint64_t id)
+{
+  for (unsigned cId=0;cId<inputData.size();++cId)
+    result[cId].push_back(inputData[cId][id]);
+}
 //---------------------------------------------------------------------------
 bool FilterScan::applyFilter(uint64_t i,FilterInfo& f)
   // Apply filter
@@ -76,13 +81,74 @@ bool FilterScan::applyFilter(uint64_t i,FilterInfo& f)
 void FilterScan::run()
   // Run
 {
-  for (uint64_t i=0;i<relation.rowCount;++i) {
-    bool pass=true;
-    for (auto& f : filters) {
-      pass&=applyFilter(i,f);
+  if (relation.rowCount > (MIN_FILTER_ITEM_CNT << 1)) {
+    uint32_t filter_cnt = std::min((uint32_t)(relation.rowCount / MIN_FILTER_ITEM_CNT), MAX_FILTER_TAKS_CNT);
+    std::vector<std::vector<std::vector<uint64_t>>> parallelResults(filter_cnt, std::vector<std::vector<uint64_t>>(tmpResults.size()));
+    size_t step = (relation.rowCount + filter_cnt - 1) / filter_cnt;
+    size_t start = step;
+    int filterid = 0;
+    std::vector<std::future<size_t>> vf;
+    while (start < relation.rowCount) {
+      filterid ++;
+      if (start + step >= relation.rowCount) {
+        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &results = parallelResults[filterid], start, end = relation.rowCount]() {
+          bool pass=true;
+          for (uint64_t i = start; i < end; i++) {
+            for (auto& f : filters) {
+              pass&=applyFilter(i,f);
+            }
+            if (pass)
+              copy2ResultP(results, i);
+            pass = true;
+          }
+          return results[0].size();
+        }));
+        break;
+      }
+      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &results = parallelResults[filterid], start, end = start + step]() {
+        bool pass = true;
+        for (uint64_t i = start; i < end; i++) {
+          for (auto& f : filters) {
+            pass&=applyFilter(i,f);
+          }
+          if (pass)
+            copy2ResultP(results, i);
+          pass = true;
+        }
+        return results[0].size();
+      }));
+      start += step;
     }
-    if (pass)
-      copy2Result(i);
+    for (uint64_t i = 0; i < step; i++) {
+      bool pass=true;
+      for (auto& f : filters) {
+        pass&=applyFilter(i,f);
+      }
+      if (pass)
+        copy2Result(i);
+    }
+
+    // wait and merge the result
+    size_t pcnt = 0;
+    for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+      pcnt += x.get();
+    });
+    resultSize += pcnt;
+    for (int i = 0; i < tmpResults.size(); i++) {
+      tmpResults[i].reserve(resultSize);
+      for (int j = 1; j < parallelResults.size(); j++) {
+        tmpResults[i].insert(tmpResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
+      }
+    }
+  } else {
+    for (uint64_t i=0;i<relation.rowCount;++i) {
+      bool pass=true;
+      for (auto& f : filters) {
+        pass&=applyFilter(i,f);
+      }
+      if (pass)
+        copy2Result(i);
+    }
   }
 }
 //---------------------------------------------------------------------------

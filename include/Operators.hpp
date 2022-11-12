@@ -86,6 +86,7 @@ class FilterScan : public Scan {
   bool applyFilter(uint64_t id,FilterInfo& f);
   /// Copy tuple to result
   void copy2Result(uint64_t id);
+  void copy2ResultP(std::vector<std::vector<uint64_t>> &result, uint64_t id);
 
   public:
   /// The constructor
