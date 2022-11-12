@@ -3,6 +3,7 @@
 #include <fstream>
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <limits>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -123,25 +124,28 @@ void Relation::calThenSetEstimateCost(FilterInfo &filter)
   {
   case FilterInfo::Comparison::Equal:
     // build concurrent unordered multimap?
-    filter.eCost = static_cast<uint64_t>((static_cast<double>(scount) / this->sample_distinctVals[idx].size()) * sample_factor);
+    // filter.eCost = static_cast<uint64_t>((static_cast<double>(scount) / this->sample_distinctVals[idx].size()) * sample_factor);
+    filter.eCost = std::log(count);
     break;
   case FilterInfo::Comparison::Greater:
     // build concurrent multimap?
-    if (filter.constant > sample_maxs[idx] || filter.constant < sample_mins[idx]) {
-      filter.eCost = count;
-    } else {
-      fraction = static_cast<double>(sample_maxs[idx] - filter.constant) / static_cast<double>(sample_maxs[idx] - sample_mins[idx]);
-      filter.eCost = static_cast<uint64_t>(count * fraction);
-    }
+    // if (filter.constant > sample_maxs[idx] || filter.constant < sample_mins[idx]) {
+    //   filter.eCost = count;
+    // } else {
+    //   fraction = static_cast<double>(sample_maxs[idx] - filter.constant) / static_cast<double>(sample_maxs[idx] - sample_mins[idx]);
+    //   filter.eCost = static_cast<uint64_t>(count * fraction);
+    // }
+    filter.eCost = count / 2;
     break;
   case FilterInfo::Comparison::Less:
     // build concurrent multimap?
-    if (filter.constant > sample_maxs[idx] || filter.constant < sample_mins[idx]) {
-      filter.eCost = count;
-    } else {
-      fraction = static_cast<double>(filter.constant - sample_mins[idx]) / static_cast<double>(sample_maxs[idx] - sample_mins[idx]);
-      filter.eCost = static_cast<uint64_t>(count * fraction);
-    }
+    // if (filter.constant > sample_maxs[idx] || filter.constant < sample_mins[idx]) {
+    //   filter.eCost = count;
+    // } else {
+    //   fraction = static_cast<double>(filter.constant - sample_mins[idx]) / static_cast<double>(sample_maxs[idx] - sample_mins[idx]);
+    //   filter.eCost = static_cast<uint64_t>(count * fraction);
+    // }
+    filter.eCost = count / 2;
     break;
   default:
     assert(false);

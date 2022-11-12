@@ -149,33 +149,33 @@ unique_ptr<Operator> Joiner::buildMyPlanTree(QueryInfo& query)
   // my left-deep join tree
 {
   // First calculate estimate row count for the Filter
-//   for (auto &filter: query.filters) {
-//     auto relId = filter.filterColumn.relId;
-//     getRelation(relId).calThenSetEstimateCost(filter);
-// #if PRINT_LOG
-//     log_print("filter:{}, eCost:{}, rowCount:{}\n",
-//       filter.comparison == FilterInfo::Comparison::Equal ? "=" : filter.comparison == FilterInfo::Comparison::Greater ? ">" : "<",
-//       filter.eCost, filter.rowCount);
-// #endif
-//   }
+  for (auto &filter: query.filters) {
+    auto relId = filter.filterColumn.relId;
+    getRelation(relId).calThenSetEstimateCost(filter);
+#if PRINT_LOG
+    log_print("filter:{}, eCost:{}, rowCount:{}\n",
+      filter.comparison == FilterInfo::Comparison::Equal ? "=" : filter.comparison == FilterInfo::Comparison::Greater ? ">" : "<",
+      filter.eCost, filter.rowCount);
+#endif
+  }
 
   // Second for every Predicate(i.e. Join), add the operator to a PQ
-  // auto cmp = [](PredicateInfo &left, PredicateInfo &right) { return left.eCost < right.eCost; };
-  // for (auto &pInfo : query.predicates) {
-  //   if (pInfo.left.binding == pInfo.right.binding) {
-  //     pInfo.eCost = estimateCost(pInfo.left, query);
-  //     pInfo.eCost = static_cast<uint64_t>(::sqrt(pInfo.eCost));
-  //   } else {
-  //     pInfo.eCost = std::min(estimateCost(pInfo.left, query), estimateCost(pInfo.right, query));
-  //   }
-  // }
+  auto cmp = [](PredicateInfo &left, PredicateInfo &right) { return left.eCost < right.eCost; };
+  for (auto &pInfo : query.predicates) {
+    if (pInfo.left.binding == pInfo.right.binding) {
+      pInfo.eCost = estimateCost(pInfo.left, query);
+      pInfo.eCost = static_cast<uint64_t>(::sqrt(pInfo.eCost));
+    } else {
+      pInfo.eCost = std::min(estimateCost(pInfo.left, query), estimateCost(pInfo.right, query));
+    }
+  }
   // sort the predicates
-//   std::sort(query.predicates.begin(), query.predicates.end(), cmp);
-//   for (auto &predicate : query.predicates) {
-// #if PRINT_LOG
-//     log_print("predicate {}, eCost:{}\n", predicate.dumpText(), predicate.eCost);
-// #endif
-//   }
+  std::sort(query.predicates.begin(), query.predicates.end(), cmp);
+  for (auto &predicate : query.predicates) {
+#if PRINT_LOG
+    log_print("predicate {}, eCost:{}\n", predicate.dumpText(), predicate.eCost);
+#endif
+  }
 
   // following is copied from buildPlanTree
   set<unsigned> usedRelations;
