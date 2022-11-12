@@ -34,5 +34,6 @@ class Joiner {
   /// my left-deep join tree
   std::unique_ptr<Operator> buildMyPlanTree(QueryInfo& query);
   static int query_count;
+  static int batch;
 };
 //---------------------------------------------------------------------------

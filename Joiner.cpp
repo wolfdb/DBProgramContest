@@ -20,6 +20,7 @@ using namespace std;
 using namespace std::chrono;
 //---------------------------------------------------------------------------
 int Joiner::query_count = 0;
+int Joiner::batch = 0;
 
 void Joiner::addRelation(const char* fileName)
 // Loads a relation from disk
@@ -148,33 +149,33 @@ unique_ptr<Operator> Joiner::buildMyPlanTree(QueryInfo& query)
   // my left-deep join tree
 {
   // First calculate estimate row count for the Filter
-  for (auto &filter: query.filters) {
-    auto relId = filter.filterColumn.relId;
-    getRelation(relId).calThenSetEstimateCost(filter);
-#if PRINT_LOG
-    log_print("filter:{}, eCost:{}, rowCount:{}\n",
-      filter.comparison == FilterInfo::Comparison::Equal ? "=" : filter.comparison == FilterInfo::Comparison::Greater ? ">" : "<",
-      filter.eCost, filter.rowCount);
-#endif
-  }
+//   for (auto &filter: query.filters) {
+//     auto relId = filter.filterColumn.relId;
+//     getRelation(relId).calThenSetEstimateCost(filter);
+// #if PRINT_LOG
+//     log_print("filter:{}, eCost:{}, rowCount:{}\n",
+//       filter.comparison == FilterInfo::Comparison::Equal ? "=" : filter.comparison == FilterInfo::Comparison::Greater ? ">" : "<",
+//       filter.eCost, filter.rowCount);
+// #endif
+//   }
 
   // Second for every Predicate(i.e. Join), add the operator to a PQ
-  auto cmp = [](PredicateInfo &left, PredicateInfo &right) { return left.eCost < right.eCost; };
-  for (auto &pInfo : query.predicates) {
-    if (pInfo.left.binding == pInfo.right.binding) {
-      pInfo.eCost = estimateCost(pInfo.left, query);
-      pInfo.eCost = static_cast<uint64_t>(::sqrt(pInfo.eCost));
-    } else {
-      pInfo.eCost = std::min(estimateCost(pInfo.left, query), estimateCost(pInfo.right, query));
-    }
-  }
+  // auto cmp = [](PredicateInfo &left, PredicateInfo &right) { return left.eCost < right.eCost; };
+  // for (auto &pInfo : query.predicates) {
+  //   if (pInfo.left.binding == pInfo.right.binding) {
+  //     pInfo.eCost = estimateCost(pInfo.left, query);
+  //     pInfo.eCost = static_cast<uint64_t>(::sqrt(pInfo.eCost));
+  //   } else {
+  //     pInfo.eCost = std::min(estimateCost(pInfo.left, query), estimateCost(pInfo.right, query));
+  //   }
+  // }
   // sort the predicates
-  std::sort(query.predicates.begin(), query.predicates.end(), cmp);
-  for (auto &predicate : query.predicates) {
-#if PRINT_LOG
-    log_print("predicate {}, eCost:{}\n", predicate.dumpText(), predicate.eCost);
-#endif
-  }
+//   std::sort(query.predicates.begin(), query.predicates.end(), cmp);
+//   for (auto &predicate : query.predicates) {
+// #if PRINT_LOG
+//     log_print("predicate {}, eCost:{}\n", predicate.dumpText(), predicate.eCost);
+// #endif
+//   }
 
   // following is copied from buildPlanTree
   set<unsigned> usedRelations;
@@ -250,6 +251,7 @@ string Joiner::join(QueryInfo& query)
   // My left-deep tree, seems not necessary to build a bushy tree?
   unique_ptr<Operator> root = buildMyPlanTree(query);
   
+  root->setParentSum();
   Checksum checkSum(move(root),query.selections);
   checkSum.run();
 
@@ -261,7 +263,7 @@ string Joiner::join(QueryInfo& query)
   stringstream ss;
   auto& results=checkSum.checkSums;
   for (unsigned i=0;i<results.size();++i) {
-    ss << (checkSum.resultSize==0?"NULL":to_string(results[i]));
+    ss << (results[i]==0?"NULL":to_string(results[i]));
     if (i<results.size()-1)
       ss << " ";
   }

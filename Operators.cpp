@@ -128,6 +128,16 @@ void Join::copy2Result(uint64_t leftId,uint64_t rightId)
     tmpResults[relColId++].push_back(copyRightData[cId][rightId]);
   ++resultSize;
 }
+void Join::copy2ResultToSum(std::vector<uint64_t> &sum, uint64_t leftId, uint64_t rightId)
+  // Copy to result
+{
+  unsigned relColId=0;
+  for (unsigned cId=0;cId<copyLeftData.size();++cId)
+    sum[relColId++] += copyLeftData[cId][leftId];
+
+  for (unsigned cId=0;cId<copyRightData.size();++cId)
+    sum[relColId++] += copyRightData[cId][rightId];
+}
 void Join::copy2ResultP(std::vector<std::vector<uint64_t>> &results, uint64_t leftId,uint64_t rightId)
   // Copy to result
 {
@@ -179,6 +189,12 @@ void Join::run()
   }
 
   if (left->resultSize == 0) {
+    if (isParentSum()) {
+      for (int i = 0; i < tmpResults.size(); i++) {
+        tmpResults[i].push_back(0);
+      }
+      resultSize = 1;
+    }
 #if PRINT_LOG
     end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
     log_print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
@@ -195,6 +211,7 @@ void Join::run()
   auto leftResultSize = left->resultSize;
   auto rightResultSize = right->resultSize;
 
+if (!isParentSum()) {
   // If left resultSize == 1, no not need to build hash table
   if (leftResultSize == 1) {
     auto leftKey = leftKeyColumn[0];
@@ -457,6 +474,251 @@ void Join::run()
     log_print("probe phase time {} ms\n", end.count() - tmpms.count());
 #endif
   }
+} else {
+  // If left resultSize == 1, no not need to build hash table
+  if (leftResultSize == 1) {
+    std::vector<uint64_t> sum(tmpResults.size(), 0);
+    auto leftKey = leftKeyColumn[0];
+    for (uint64_t i=0; i< rightResultSize; ++i) {
+      if (leftKey == rightKeyColumn[i]) {
+        copy2ResultToSum(sum, 0, i);
+      }
+    }
+
+#if PRINT_LOG
+    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    log_print("left resultSize == 1, join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
+#endif
+    resultSize = 1;
+    for (int i = 0; i < tmpResults.size(); i++) {
+      tmpResults[i].push_back(sum[i]);
+    }
+    return;
+  }
+
+  // Build phase
+#if PRINT_LOG
+  tmpms = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+#endif
+  uint32_t build_cnt = 1;
+#if USE_PARALLEL_BUILD_HASH_TABLE
+  if (leftResultSize > (MIN_BUILD_ITEM_CNT << 1)) {
+    build_cnt = std::min((uint32_t)(leftResultSize / MIN_BUILD_ITEM_CNT), MAX_BUILD_TASK_CNT);
+    hashTables.resize(build_cnt);
+    size_t bstep = (leftResultSize + build_cnt - 1) / build_cnt;
+    size_t bstart = bstep;
+    int buildid = 0;
+    std::vector<std::future<void>> bvf;
+    while (bstart < leftResultSize) {
+      buildid ++;
+      if (bstart + bstep >= leftResultSize) {
+        bvf.push_back(std::async(std::launch::async | std::launch::deferred , [&hashTable = hashTables[buildid], leftKeyColumn, bstart, bend = leftResultSize]() {
+          hashTable.reserve((bend - bstart) * 2);
+          for (uint32_t i = bstart; i < bend; i++) {
+            hashTable.emplace(leftKeyColumn[i], i);
+          }
+        }));
+        break;
+      }
+      bvf.push_back(std::async(std::launch::async | std::launch::deferred , [&hashTable = hashTables[buildid], leftKeyColumn, bstart, bend = bstart + bstep]() {
+        hashTable.reserve((bend - bstart) * 2);
+        for (uint32_t i = bstart; i < bend; i++) {
+          hashTable.emplace(leftKeyColumn[i], i);
+        }
+      }));
+      bstart += bstep;
+    }
+    hashTables[0].reserve(bstep * 2);
+    for (uint32_t i = 0; i < bstep; i++) {
+      hashTables[0].emplace(leftKeyColumn[i], i);
+    }
+    for_each(bvf.begin(), bvf.end(), [](future<void> &x) { x.wait(); });
+  } else {
+    hashTables.resize(1);
+    hashTables[0].reserve(leftResultSize * 2);
+    for (uint32_t i = 0; i < leftResultSize; i++) {
+      hashTables[0].emplace(leftKeyColumn[i], i);
+    }
+  }
+#else
+  hashTable.reserve(left->resultSize*2);
+  for (uint64_t i=0,limit=i+left->resultSize;i!=limit;++i) {
+    hashTable.emplace(leftKeyColumn[i],i);
+  }
+#endif
+#if PRINT_LOG
+  end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+  log_print("Left result size: {} build hashmap time {} ms\n", leftResultSize, end.count() - tmpms.count());
+  tmpms = end;
+#endif
+  // Probe phase
+#if PRINT_LOG
+  log_print("right result size: {}, is range: false\n", rightResultSize);
+#endif
+
+  if (rightResultSize > (MIN_PROBE_ITEM_CNT << 1)) {
+    uint32_t task_cnt = (32 + build_cnt - 1) / build_cnt;
+    task_cnt = std::min(task_cnt, MAX_PROBE_TASK_CNT);
+    size_t step = (rightResultSize + task_cnt - 1) / task_cnt;
+    size_t start = step;
+    int taskid = 0;
+    std::vector<std::vector<uint64_t>> parallelSums(task_cnt * build_cnt, std::vector<uint64_t>(tmpResults.size(), 0));
+    std::vector<std::future<void>> vf;
+#if USE_PARALLEL_BUILD_HASH_TABLE
+    while (start < rightResultSize) {
+      taskid ++;
+      if (start + step >= rightResultSize) {
+        for (uint32_t ii = 0; ii < build_cnt; ii++) {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &sum = parallelSums[taskid * build_cnt + ii], rightKeyColumn, start, end = rightResultSize]() {
+            for (uint64_t i = start; i < end; i++) {
+              auto rightKey = rightKeyColumn[i];
+              auto range = hashTable.equal_range(rightKey);
+              for (auto iter = range.first; iter != range.second; ++iter) {
+                copy2ResultToSum(sum, iter->second, i);
+              }
+            }
+          }));
+        }
+        break;
+      }
+      for (uint32_t ii = 0; ii < build_cnt; ii++) {
+        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &sum = parallelSums[taskid * build_cnt + ii], rightKeyColumn, start, end = start + step]() {
+          for (uint32_t i = start; i < end; i++) {
+            auto rightKey = rightKeyColumn[i];
+            auto range = hashTable.equal_range(rightKey);
+            for (auto iter = range.first; iter != range.second; ++iter) {
+              copy2ResultToSum(sum, iter->second, i);
+            }
+          }
+        }));
+      }
+      start += step;
+    }
+    for (uint32_t ii = 1; ii < build_cnt; ii++) {
+      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &sum = parallelSums[ii], rightKeyColumn, start = 0, end = step]() {
+        for (uint32_t i = start; i < end; i++) {
+          auto rightKey = rightKeyColumn[i];
+          auto range = hashTable.equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultToSum(sum, iter->second, i);
+          }
+        }
+      }));
+    }
+
+    for (uint32_t i = 0; i < step; i++) {
+      auto rightKey = rightKeyColumn[i];
+      auto range = hashTables[0].equal_range(rightKey);
+      for (auto iter = range.first; iter != range.second; ++iter) {
+        copy2ResultToSum(parallelSums[0], iter->second, i);
+      }
+    }
+#else // USE_PARALLEL_BUILD_HASH_TABLE
+    while (start < rightResultSize) {
+      taskid ++;
+      if (start + step >= rightResultSize) {
+        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &sum = parallelSums[taskid], rightKeyColumn, start, end = rightResultSize]() {
+          for (uint32_t i = start; i < end; i++) {
+            auto rightKey = rightKeyColumn[i];
+            auto range = hashTable.equal_range(rightKey);
+            for (auto iter = range.first; iter != range.second; ++iter) {
+              copy2ResultToSum(sum, iter->second, i);
+            }
+          }
+        }));
+        break;
+      }
+      vf.push_back(std::async(std::launch::async | std::launch::deferred , [this, &sum = parallelSums[taskid], rightKeyColumn, start, end = start + step]() {
+        for (uint32_t i = start; i < end; i++) {
+          auto rightKey = rightKeyColumn[i];
+          auto range = hashTable.equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultToSum(sum, iter->second, i);
+          }
+        }
+      }));
+      start += step;
+    }
+    for (uint32_t i = 0; i < step; i++) {
+      auto rightKey = rightKeyColumn[i];
+      auto range = hashTable.equal_range(rightKey);
+      for (auto iter = range.first; iter != range.second; ++iter) {
+        copy2ResultToSum(parallelSums[0], iter->second, i);
+      }
+    }
+#endif
+    // wait for the results
+    for_each(vf.begin(), vf.end(), [](future<void> &x) {
+      x.wait();
+    });
+
+    // merge the results
+    for (int i = 1; i < parallelSums.size(); i++) {
+      for (int j = 0; j < parallelSums[0].size(); j++) {
+        parallelSums[0][j] += parallelSums[i][j];
+      }
+    }
+    resultSize = 1;
+    for (int i = 0; i < tmpResults.size(); i++) {
+      tmpResults[i].push_back(parallelSums[0][i]);
+    }
+  } else {    // MIN_PROBE_ITEM_CNT
+#if USE_PARALLEL_BUILD_HASH_TABLE
+    std::vector<std::vector<uint64_t>> parallelSums(build_cnt, std::vector<uint64_t>(tmpResults.size(), 0));
+    std::vector<std::future<void>> vf;
+    for (uint32_t ii = 1; ii < build_cnt; ii++) {
+      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &sum = parallelSums[ii], rightKeyColumn, start = 0, end = rightResultSize]() {
+        for (uint32_t i = start; i < end; i++) {
+          auto rightKey = rightKeyColumn[i];
+          auto range = hashTable.equal_range(rightKey);
+          for (auto iter = range.first; iter != range.second; ++iter) {
+            copy2ResultToSum(sum, iter->second, i);
+          }
+        }
+      }));
+    }
+    for (uint32_t i = 0; i < rightResultSize; i++) {
+      auto rightKey = rightKeyColumn[i];
+      auto range = hashTables[0].equal_range(rightKey);
+      for (auto iter = range.first; iter != range.second; ++iter) {
+        copy2ResultToSum(parallelSums[0], iter->second, i);
+      }
+    }
+    // merge results
+    for_each(vf.begin(), vf.end(), [](future<void> &x) {
+      x.wait();
+    });
+    resultSize = 1;
+    for (int i = 1; i < parallelSums.size(); i++) {
+      for (int j = 0; j < parallelSums[0].size(); j++) {
+        parallelSums[0][j] += parallelSums[i][j];
+      }
+    }
+    for (int i = 0; i < tmpResults.size(); i++) {
+      tmpResults[i].push_back(parallelSums[0][i]);
+    }
+#else
+    std::vector<uint64_t> sum(tmpResults.size(), 0);
+    for (uint64_t i=0,limit=i+right->resultSize;i!=limit;++i) {
+      auto rightKey=rightKeyColumn[i];
+      auto range=hashTable.equal_range(rightKey);
+      for (auto iter=range.first;iter!=range.second;++iter) {
+        copy2ResultToSum(sum, iter->second, i);
+      }
+    }
+
+    resultSize = 1;
+    for (int i = 0; i < tmpResults.size(); i++) {
+      // log_print("{}: {}\n", i, sum[i]);
+      tmpResults[i].push_back(sum[i]);
+    }
+#endif
+#if PRINT_LOG
+    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+    log_print("probe phase time {} ms\n", end.count() - tmpms.count());
+#endif
+  }
+}
 #if PRINT_LOG
   end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   log_print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
@@ -469,6 +731,12 @@ void SelfJoin::copy2Result(uint64_t id)
   for (unsigned cId=0;cId<copyData.size();++cId)
     tmpResults[cId].push_back(copyData[cId][id]);
   ++resultSize;
+}
+
+void SelfJoin::copy2ResultToSum(std::vector<uint64_t> &sum, uint64_t id)
+{
+  for (unsigned cId=0;cId<copyData.size();++cId)
+    sum[cId] += copyData[cId][id];
 }
 //---------------------------------------------------------------------------
 bool SelfJoin::require(SelectInfo info)
@@ -503,9 +771,22 @@ void SelfJoin::run()
 
   auto leftCol=inputData[leftColId];
   auto rightCol=inputData[rightColId];
-  for (uint64_t i=0;i<input->resultSize;++i) {
-    if (leftCol[i]==rightCol[i])
-      copy2Result(i);
+  if (isParentSum()) {
+    std::vector<uint64_t> sum(tmpResults.size(), 0);
+    for (uint64_t i=0;i<input->resultSize;++i) {
+      if (leftCol[i]==rightCol[i])
+        copy2ResultToSum(sum, i);
+    }
+
+    resultSize = 1;
+    for (int i = 0; i < tmpResults.size(); i++) {
+      tmpResults[i].push_back(sum[i]);
+    }
+  } else {
+    for (uint64_t i=0;i<input->resultSize;++i) {
+      if (leftCol[i]==rightCol[i])
+        copy2Result(i);
+    }
   }
 }
 //---------------------------------------------------------------------------
@@ -517,15 +798,35 @@ void Checksum::run()
   }
   input->run();
   auto results=input->getResults();
-
   for (auto& sInfo : colInfo) {
-    auto colId=input->resolve(sInfo);
-    auto resultCol=results[colId];
-    uint64_t sum=0;
-    resultSize=input->resultSize;
-    for (auto iter=resultCol,limit=iter+input->resultSize;iter!=limit;++iter)
-      sum+=*iter;
-    checkSums.push_back(sum);
+    auto colId = input->resolve(sInfo);
+    // log_print("checksum: {}, {}\n", colId, results[colId][0]);
+    checkSums.push_back(results[colId][0]);
   }
+
+  // std::vector<std::future<void>> vf;
+  // for (auto& sInfo : colInfo) {
+  //   if (sumsCache.find(sInfo) != sumsCache.end()) {
+  //     continue;
+  //   }
+  //   auto colId=input->resolve(sInfo);
+  //   auto resultCol=results[colId];
+  //   resultSize=input->resultSize;
+  //   sumsCache.insert({sInfo, 0});
+
+  //   vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, resultCol, &sInfo]() {
+  //     uint64_t sum=0;
+  //     for (auto iter=resultCol,limit=iter+input->resultSize;iter!=limit;++iter)
+  //       sum+=*iter;
+  //     sumsCache[sInfo] = sum;
+  //   }));
+  //   for_each(vf.begin(), vf.end(), [](future<void> &x) {
+  //     x.wait();
+  //   });
+  // }
+
+  // for (auto &sInfo: colInfo) {
+  //   checkSums.push_back(sumsCache[sInfo]);
+  // }
 }
 //---------------------------------------------------------------------------

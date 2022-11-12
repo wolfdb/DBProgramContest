@@ -14,6 +14,7 @@
 enum class OperatorType { Scan, FilterScan, Join, SelfJoin, Checksum};
 class Operator {
   /// Operators materialize their entire result
+  bool isParentSumOperator = false;
 
   protected:
   /// Mapping from select info to data
@@ -37,6 +38,13 @@ class Operator {
   uint64_t resultSize=0;
   /// estimate row count
   uint64_t eCost;
+
+  virtual bool isParentSum() {
+    return isParentSumOperator;
+  }
+  virtual void setParentSum() {
+    isParentSumOperator = true;
+  }
 
   std::set<unsigned> bindings;
   /// The destructor
@@ -112,6 +120,7 @@ class Join : public Operator {
   PredicateInfo& pInfo;
   /// Copy tuple to result
   void copy2Result(uint64_t leftId,uint64_t rightId);
+  void copy2ResultToSum(std::vector<uint64_t> &sum, uint64_t leftId,uint64_t rightId);
   void copy2ResultP(std::vector<std::vector<uint64_t>> &result, uint64_t leftId,uint64_t rightId);
   /// Create mapping for bindings
   void createMappingForBindings();
@@ -154,6 +163,7 @@ class SelfJoin : public Operator {
   PredicateInfo& pInfo;
   /// Copy tuple to result
   void copy2Result(uint64_t id);
+  void copy2ResultToSum(std::vector<uint64_t> &sum, uint64_t id);
   /// The required IUs
   std::set<SelectInfo> requiredIUs;
 
