@@ -91,7 +91,7 @@ void FilterScan::run()
     while (start < relation.rowCount) {
       filterid ++;
       if (start + step >= relation.rowCount) {
-        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &results = parallelResults[filterid], start, end = relation.rowCount]() {
+        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, filter_cnt, &results = parallelResults[filterid], start, end = relation.rowCount]() {
           if (filters.size() == 1) {
             auto &f = filters[0];
             auto constant=f.constant;
@@ -134,11 +134,24 @@ void FilterScan::run()
               pass = true;
             }
           }
+          foo.lock();
+          if (needReserve) {
+            needReserve = false;
+            auto estimateCapacity = results.size() * filter_cnt * 2;
+            for (int i = 0; i < tmpResults.size(); i++) {
+              tmpResults[i].reserve(estimateCapacity);
+            }
+          }
+          for (int i = 0; i < tmpResults.size(); i++) {
+            tmpResults[i].insert(tmpResults[i].begin(), results[i].begin(), results[i].end());
+          }
+          foo.unlock();
+
           return results[0].size();
         }));
         break;
       }
-      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &results = parallelResults[filterid], start, end = start + step]() {
+      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, filter_cnt, &results = parallelResults[filterid], start, end = start + step]() {
         if (filters.size() == 1) {
           auto &f = filters[0];
           auto constant=f.constant;
@@ -181,10 +194,24 @@ void FilterScan::run()
             pass = true;
           }
         }
+        foo.lock();
+        if (needReserve) {
+          needReserve = false;
+          auto estimateCapacity = results.size() * filter_cnt * 2;
+          for (int i = 0; i < tmpResults.size(); i++) {
+            tmpResults[i].reserve(estimateCapacity);
+          }
+        }
+        for (int i = 0; i < tmpResults.size(); i++) {
+          tmpResults[i].insert(tmpResults[i].begin(), results[i].begin(), results[i].end());
+        }
+        foo.unlock();
         return results[0].size();
       }));
       start += step;
     }
+
+    auto &results = parallelResults[0];
     if (filters.size() == 1) {
       auto &f = filters[0];
       auto constant=f.constant;
@@ -194,14 +221,14 @@ void FilterScan::run()
         case FilterInfo::Comparison::Equal: {
           for (uint64_t i = 0; i < step; i++) {
             if (compareCol[i] == constant)
-              copy2Result(i);
+              copy2ResultP(results, i);
           }
           break;
         }
         case FilterInfo::Comparison::Greater: {
           for (uint64_t i = 0; i < step; i++) {
             if (compareCol[i] > constant)
-              copy2Result(i);
+              copy2ResultP(results, i);
           }
           break;
         }
@@ -209,7 +236,7 @@ void FilterScan::run()
         case FilterInfo::Comparison::Less: {
           for (uint64_t i = 0; i < step; i++) {
             if (compareCol[i] < constant)
-              copy2Result(i);
+              copy2ResultP(results, i);
           }
           break;
         }
@@ -223,23 +250,29 @@ void FilterScan::run()
           pass&=applyFilter(i,f);
         }
         if (pass)
-          copy2Result(i);
+          copy2ResultP(results, i);
         pass = true;
       }
     }
+    foo.lock();
+    if (needReserve) {
+      needReserve = false;
+      auto estimateCapacity = results.size() * filter_cnt * 2;
+      for (int i = 0; i < tmpResults.size(); i++) {
+        tmpResults[i].reserve(estimateCapacity);
+      }
+    }
+    for (int i = 0; i < tmpResults.size(); i++) {
+      tmpResults[i].insert(tmpResults[i].begin(), results[i].begin(), results[i].end());
+    }
+    foo.unlock();
 
-    // wait and merge the result
-    size_t pcnt = 0;
+    // wait
+    size_t pcnt = results[0].size();
     for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
       pcnt += x.get();
     });
     resultSize += pcnt;
-    for (int i = 0; i < tmpResults.size(); i++) {
-      tmpResults[i].reserve(resultSize);
-      for (int j = 1; j < parallelResults.size(); j++) {
-        tmpResults[i].insert(tmpResults[i].begin(), parallelResults[j][i].begin(), parallelResults[j][i].end());
-      }
-    }
   } else {
     for (uint64_t i=0;i<relation.rowCount;++i) {
       bool pass=true;

@@ -8,6 +8,7 @@
 #include <vector>
 #include <set>
 #include <map>
+#include <mutex>
 #include "Relation.hpp"
 #include "Parser.hpp"
 //---------------------------------------------------------------------------
@@ -23,7 +24,9 @@ class Operator {
   std::vector<uint64_t*> resultColumns;
   /// The tmp results
   std::vector<std::vector<uint64_t>> tmpResults;
-
+  /// mutex to protect tmpResults
+  std::mutex foo;
+  bool needReserve = true;
 
   public:
   /// Require a column and add it to results
