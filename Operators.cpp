@@ -200,11 +200,11 @@ void FilterScan::run()
     uint64_t merge_position = 0;
     for (auto &positions: parallelPostions) {
       mvf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions, merge_position]() {
-        uint64_t index = merge_position;
-        for (uint64_t pos: positions) {
-          for (unsigned cId=0;cId<inputData.size();++cId)
-            tmpResults[cId][index] = inputData[cId][pos];
-          index ++;
+        for (unsigned cId=0;cId<inputData.size();++cId) {
+          uint64_t index = merge_position;
+          for (uint64_t pos: positions) {
+            tmpResults[cId][index++] = inputData[cId][pos];
+          }
         }
       }));
       merge_position += positions.size();
@@ -509,17 +509,25 @@ if (!isParentSum()) {
     uint64_t merge_position = 0;
     std::vector<std::future<void>> mvf;
     for (int ii = 0; ii < parallelPositions.size(); ii++) {
-      mvf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions = parallelPositions[ii], merge_position]() {
-        uint64_t index = merge_position;
-        for (auto &pos: positions) {
-          unsigned relColId=0;
-          for (unsigned cId=0;cId<copyLeftData.size();++cId)
-            tmpResults[relColId++][index] = copyLeftData[cId][pos[0]];
-          for (unsigned cId=0;cId<copyRightData.size();++cId)
-            tmpResults[relColId++][index] = copyRightData[cId][pos[1]];
-          index ++;
-        }
-      }));
+      unsigned relColId=0;
+      for (unsigned cId=0;cId<copyLeftData.size();++cId) {
+        mvf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions = parallelPositions[ii], merge_position, relColId, cId]() {
+           uint64_t index = merge_position;
+          for (const auto &pos: positions) {
+            tmpResults[relColId][index++] = copyLeftData[cId][pos[0]];
+          }
+        }));
+        relColId++;
+      }
+      for (unsigned cId=0;cId<copyRightData.size();++cId) {
+        mvf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions = parallelPositions[ii], merge_position, relColId, cId]() {
+           uint64_t index = merge_position;
+          for (const auto &pos: positions) {
+            tmpResults[relColId][index++] = copyRightData[cId][pos[1]];
+          }
+        }));
+        relColId++;
+      }
       merge_position += parallelPositions[ii].size();
     }
     for_each(mvf.begin(), mvf.end(), [](future<void> &x) {
