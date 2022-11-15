@@ -171,7 +171,9 @@ void QueryInfo::parseQuery(string& rawQuery)
   parsePredicates(queryParts[1]);
   parseSelections(queryParts[2]);
   resolveRelationIds();
+#if PRINT_LOG
   log_print("original query: {}\nrewrite query: {}\n", rawQuery, dumpText());
+#endif
 }
 //---------------------------------------------------------------------------
 void QueryInfo::clear()
