@@ -57,6 +57,89 @@ static SelectInfo parseRelColPair(string& raw)
 //---------------------------------------------------------------------------
 inline static bool isConstant(string& raw) { return raw.find('.')==string::npos; }
 //---------------------------------------------------------------------------
+void QueryInfo::addFilter(SelectInfo &si, uint64_t constant, char compType) {
+  if (filterMap.find(si) == filterMap.end()) {
+    filterMap[si].push_back({si, constant, FilterInfo::Comparison(compType)});
+  } else {
+    auto &filters = filterMap[si];
+    bool should_clear = false;
+    bool should_add = filters.size() < 2;
+    // check each filter
+    for (auto &filter : filters) {
+      switch (filter.comparison)
+      {
+        case FilterInfo::Comparison::Equal: {
+          if (compType == '=') {
+            if (constant != filter.constant) {
+              impossible = true;
+            }
+          } else if (compType == '>') {
+            if (constant >= filter.constant) {
+              impossible = true;
+            }
+          } else if (compType == '<') {
+            if (constant <= filter.constant) {
+              impossible = true;
+            }
+          }
+          should_add = false;
+          break;
+        }
+        case FilterInfo::Comparison::Greater: {
+          if (compType == '=') {
+            if (constant <= filter.constant) {
+              impossible = true;
+            } else {
+              should_clear = true;
+              should_add = true;
+            }
+          } else if (compType == '>') {
+            if (constant > filter.constant) {
+              filter.constant = constant;
+            }
+            should_add = false;
+          } else if (compType == '<') {
+            if (constant <= filter.constant) {
+              impossible = true;
+            }
+          }
+          break;
+        }
+        case FilterInfo::Comparison::Less: {
+          if (compType == '=') {
+            if (constant >= filter.constant) {
+              impossible = true;
+            } else {
+              should_clear = true;
+              should_add = true;
+            }
+          } else if (compType == '<') {
+            if (constant < filter.constant) {
+              filter.constant = constant;
+            }
+            should_add = false;
+          } else if (compType == '>') {
+            if (constant >= filter.constant) {
+              impossible = true;
+            }
+          }
+          break;
+        }
+        default:
+          break;
+      }
+      if (impossible) {
+        break;
+      }
+      if (should_clear) {
+        filters.clear();
+      }
+      if (should_add) {
+        filters.push_back({si, constant, FilterInfo::Comparison(compType)});
+      }
+    }
+  }
+}
 void QueryInfo::parsePredicate(string& rawPredicate)
   // Parse a single predicate: join "r1Id.col1Id=r2Id.col2Id" or "r1Id.col1Id=constant" filter
 {
@@ -68,7 +151,8 @@ void QueryInfo::parsePredicate(string& rawPredicate)
   if (isConstant(relCols[1])) {
     uint64_t constant=stoul(relCols[1]);
     char compType=rawPredicate[relCols[0].size()];
-    filters.emplace_back(leftSelect,constant,FilterInfo::Comparison(compType));
+    addFilter(leftSelect, constant, compType);
+    // filters.emplace_back(leftSelect,constant,FilterInfo::Comparison(compType));
   } else {
     auto rightSelect = parseRelColPair(relCols[1]);
     if (leftSelect.binding == rightSelect.binding && leftSelect.colId == rightSelect.colId) {
@@ -90,6 +174,10 @@ void QueryInfo::parsePredicates(string& text)
   splitString(text,predicateStrings,'&');
   for (auto& rawPredicate : predicateStrings) {
     parsePredicate(rawPredicate);
+  }
+
+  if (impossible) {
+    return;
   }
 
   // resemble predicates
@@ -124,6 +212,39 @@ void QueryInfo::parsePredicates(string& text)
     // log_print("dump: {}\n", predicate.dumpText());
     predicates.push_back(predicate);
   }
+
+  // expand filters
+  // for (int i = 0; i < 2; i++) {
+    for (auto &predicate : predicates) {
+      if (filterMap.find(predicate.left) != filterMap.end()) {
+        auto &fils = filterMap[predicate.left];
+        for (auto &fil : fils) {
+          addFilter(predicate.right, fil.constant, fil.comparison);
+          if (impossible) {
+            return;
+          }
+        }
+      }
+      if (filterMap.find(predicate.right) != filterMap.end()) {
+        auto &fils = filterMap[predicate.right];
+        for (auto &fil : fils) {
+          addFilter(predicate.left, fil.constant, fil.comparison);
+          if (impossible) {
+            return;
+          }
+        }
+      }
+    }
+    if (impossible) {
+      return;
+    }
+  // }
+  for (auto &fm: filterMap) {
+    for (auto filter: fm.second) {
+      filters.push_back(filter);
+    }
+  }
+
 }
 //---------------------------------------------------------------------------
 void QueryInfo::parseSelections(string& rawSelections)
@@ -171,6 +292,7 @@ void QueryInfo::parseQuery(string& rawQuery)
   parsePredicates(queryParts[1]);
   parseSelections(queryParts[2]);
   resolveRelationIds();
+
 #if PRINT_LOG
   log_print("original query: {}\nrewrite query: {}\n", rawQuery, dumpText());
 #endif
@@ -185,6 +307,8 @@ void QueryInfo::clear()
   selections.clear();
   selectInfoMap.clear();
   predicatesSet.clear();
+  filterMap.clear();
+  impossible = false;
 }
 //---------------------------------------------------------------------------
 static string wrapRelationName(uint64_t id)

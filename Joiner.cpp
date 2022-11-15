@@ -245,6 +245,17 @@ string Joiner::join(QueryInfo& query)
   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
 #endif
   Joiner::query_count ++;
+  if (query.impossible) {
+    stringstream ss;
+    for (unsigned i = 0; i < query.selections.size(); i++) {
+      ss << "NULL";
+      if (i < query.selections.size() - 1) {
+        ss << " ";
+      }
+    }
+    ss << "\n";
+    return ss.str();
+  }
 
   // The original left-deep tree
   // unique_ptr<Operator> root = buildPlanTree(query);

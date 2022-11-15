@@ -159,11 +159,14 @@ class QueryInfo {
    /// The selection info pair
    ///                                     binding
    std::unordered_map<SelectInfo, std::map<unsigned, std::set<SelectInfo>>> selectInfoMap;
+   std::unordered_map<SelectInfo, std::vector<FilterInfo>> filterMap;
    std::set<PredicateInfo> predicatesSet;
    /// The filters
    std::vector<FilterInfo> filters;
    /// The selections
    std::vector<SelectInfo> selections;
+   /// Is the query impossible
+   bool impossible = false;
    /// Reset query info
    void clear();
 
@@ -182,6 +185,7 @@ class QueryInfo {
    void parseSelections(std::string& rawSelections);
    /// Parse selections [RELATIONS]|[PREDICATES]|[SELECTS]
    void parseQuery(std::string& rawQuery);
+   void addFilter(SelectInfo &si, uint64_t constant, char compType);
    /// Dump text format
    std::string dumpText();
    /// Dump SQL
