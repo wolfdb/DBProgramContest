@@ -496,7 +496,7 @@ if (!isParentSum()) {
 #endif
 
   if (rightResultSize > (MIN_PROBE_ITEM_CNT << 1)) {
-    uint32_t task_cnt = (32 + build_cnt - 1) / build_cnt;
+    uint32_t task_cnt = rightResultSize / MIN_PROBE_ITEM_CNT;
     task_cnt = std::min(task_cnt, MAX_PROBE_TASK_CNT);
     size_t step = (rightResultSize + task_cnt - 1) / task_cnt;
     size_t start = 0;
@@ -506,8 +506,9 @@ if (!isParentSum()) {
 #if USE_PARALLEL_BUILD_HASH_TABLE
     while (start < rightResultSize) {
       if (start + step >= rightResultSize) {
-        for (uint32_t ii = 0; ii < build_cnt; ii++) {
-          vf.push_back(std::async(std::launch::async | std::launch::deferred, [&hashTable = hashTables[ii], &positions = parallelPositions[taskid * build_cnt + ii], rightKeyColumn, start, end = rightResultSize]() {
+        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions = parallelPositions[taskid], build_cnt, rightKeyColumn, start, end = rightResultSize]() {
+          for (uint32_t ii = 0; ii < build_cnt; ii++) {
+            auto &hashTable = hashTables[ii];
             for (uint64_t i = start; i < end; i++) {
               auto rightKey = rightKeyColumn[i];
               auto range = hashTable.equal_range(rightKey);
@@ -515,13 +516,14 @@ if (!isParentSum()) {
                 positions.push_back({iter->second, i});
               }
             }
-            return positions.size();
-          }));
-        }
+          }
+          return positions.size();
+        }));
         break;
       }
-      for (uint32_t ii = 0; ii < build_cnt; ii++) {
-        vf.push_back(std::async(std::launch::async | std::launch::deferred, [&hashTable = hashTables[ii], &positions = parallelPositions[taskid * build_cnt + ii], rightKeyColumn, start, end = start + step]() {
+      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions = parallelPositions[taskid], build_cnt, rightKeyColumn, start, end = start + step]() {
+        for (uint32_t ii = 0; ii < build_cnt; ii++) {
+          auto &hashTable = hashTables[ii];
           for (uint32_t i = start; i < end; i++) {
             auto rightKey = rightKeyColumn[i];
             auto range = hashTable.equal_range(rightKey);
@@ -529,9 +531,9 @@ if (!isParentSum()) {
               positions.push_back({iter->second, i});
             }
           }
-          return positions.size();
-        }));
-      }
+        }
+        return positions.size();
+      }));
       start += step;
       taskid ++;
     }
