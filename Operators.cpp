@@ -82,6 +82,10 @@ bool FilterScan::applyFilter(uint64_t i,FilterInfo& f)
 void FilterScan::run()
   // Run
 {
+#if PRINT_LOG
+  milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+  milliseconds end;
+#endif
   if (relation.rowCount > (MIN_FILTER_ITEM_CNT << 1)) {
     uint32_t filter_cnt = std::min((uint32_t)(relation.rowCount / MIN_FILTER_ITEM_CNT), MAX_FILTER_TAKS_CNT);
     std::vector<std::vector<uint64_t>> parallelPostions(filter_cnt, std::vector<uint64_t>());
@@ -222,6 +226,10 @@ void FilterScan::run()
         copy2Result(i);
     }
   }
+#if PRINT_LOG
+  end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+  log_print("filterScan resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
+#endif
 }
 //---------------------------------------------------------------------------
 vector<uint64_t*> Operator::getResults()

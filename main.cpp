@@ -59,7 +59,7 @@ int main(int argc, char* argv[]) {
       }
       actually_query = Joiner::query_count;
       milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-      log_print("batch: {}, before this query, execution time: {} ms\n", batch, end.count() - start.count());
+      log_print("batch: {}, before this query, execution time: {} ms, work_load {}\n", batch, end.count() - start.count(), work_load);
       i.parseQuery(line);
       cout << joiner.join(i);
    }
