@@ -779,32 +779,33 @@ if (!isParentSum()) {
 #endif
 
   if (rightResultSize > (MIN_PROBE_ITEM_CNT << 1)) {
-    uint32_t task_cnt = (32 + build_cnt - 1) / build_cnt;
-    task_cnt = std::min(task_cnt, MAX_PROBE_TASK_CNT);
+    uint32_t task_cnt = rightResultSize / MIN_PROBE_ITEM_CNT;
+    task_cnt = std::min(task_cnt, 32U);
     size_t step = (rightResultSize + task_cnt - 1) / task_cnt;
-    size_t start = step;
+    size_t start = 0;
     int taskid = 0;
-    std::vector<std::vector<uint64_t>> parallelSums(task_cnt * build_cnt, std::vector<uint64_t>(tmpResults.size(), 0));
+    std::vector<std::vector<uint64_t>> parallelSums(task_cnt, std::vector<uint64_t>(tmpResults.size(), 0));
     std::vector<std::future<void>> vf;
 #if USE_PARALLEL_BUILD_HASH_TABLE
     while (start < rightResultSize) {
-      taskid ++;
       if (start + step >= rightResultSize) {
-        for (uint32_t ii = 0; ii < build_cnt; ii++) {
-          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &sum = parallelSums[taskid * build_cnt + ii], rightKeyColumn, start, end = rightResultSize]() {
-            for (uint64_t i = start; i < end; i++) {
-              auto rightKey = rightKeyColumn[i];
-              auto range = hashTable.equal_range(rightKey);
-              for (auto iter = range.first; iter != range.second; ++iter) {
-                copy2ResultToSum(sum, iter->second, i);
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &sum = parallelSums[taskid], build_cnt, rightKeyColumn, start, end = rightResultSize]() {
+            for (uint32_t ii = 0; ii < build_cnt; ii++) {
+              auto &hashTable = hashTables[ii];
+              for (uint64_t i = start; i < end; i++) {
+                auto rightKey = rightKeyColumn[i];
+                auto range = hashTable.equal_range(rightKey);
+                for (auto iter = range.first; iter != range.second; ++iter) {
+                  copy2ResultToSum(sum, iter->second, i);
+                }
               }
             }
           }));
-        }
         break;
       }
-      for (uint32_t ii = 0; ii < build_cnt; ii++) {
-        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &sum = parallelSums[taskid * build_cnt + ii], rightKeyColumn, start, end = start + step]() {
+      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &sum = parallelSums[taskid], build_cnt, rightKeyColumn, start, end = start + step]() {
+        for (uint32_t ii = 0; ii < build_cnt; ii++) {
+          auto &hashTable = hashTables[ii];
           for (uint32_t i = start; i < end; i++) {
             auto rightKey = rightKeyColumn[i];
             auto range = hashTable.equal_range(rightKey);
@@ -812,28 +813,10 @@ if (!isParentSum()) {
               copy2ResultToSum(sum, iter->second, i);
             }
           }
-        }));
-      }
-      start += step;
-    }
-    for (uint32_t ii = 1; ii < build_cnt; ii++) {
-      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &sum = parallelSums[ii], rightKeyColumn, start = 0, end = step]() {
-        for (uint32_t i = start; i < end; i++) {
-          auto rightKey = rightKeyColumn[i];
-          auto range = hashTable.equal_range(rightKey);
-          for (auto iter = range.first; iter != range.second; ++iter) {
-            copy2ResultToSum(sum, iter->second, i);
-          }
         }
       }));
-    }
-
-    for (uint32_t i = 0; i < step; i++) {
-      auto rightKey = rightKeyColumn[i];
-      auto range = hashTables[0].equal_range(rightKey);
-      for (auto iter = range.first; iter != range.second; ++iter) {
-        copy2ResultToSum(parallelSums[0], iter->second, i);
-      }
+      start += step;
+      taskid ++;
     }
 #else // USE_PARALLEL_BUILD_HASH_TABLE
     while (start < rightResultSize) {
