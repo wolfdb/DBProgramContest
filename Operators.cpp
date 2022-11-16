@@ -976,21 +976,123 @@ void SelfJoin::run()
 
   auto leftCol=inputData[leftColId];
   auto rightCol=inputData[rightColId];
+  auto inputResultSize = input->resultSize;
   if (isParentSum()) {
-    std::vector<uint64_t> sum(tmpResults.size(), 0);
-    for (uint64_t i=0;i<input->resultSize;++i) {
-      if (leftCol[i]==rightCol[i])
-        copy2ResultToSum(sum, i);
-    }
-
-    resultSize = 1;
-    for (int i = 0; i < tmpResults.size(); i++) {
-      tmpResults[i].push_back(sum[i]);
+    if (inputResultSize > (MIN_PROBE_ITEM_CNT << 1)) {
+      uint32_t task_cnt = 8;
+      size_t step = (inputResultSize + task_cnt - 1) / task_cnt;
+      size_t start = 0;
+      int taskid = 0;
+      std::vector<std::vector<uint64_t>> parallelSums(task_cnt, std::vector<uint64_t>(tmpResults.size(), 0));
+      std::vector<std::future<void>> vf;
+      while (start < inputResultSize) {
+        if (start + step >= inputResultSize) {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &sum = parallelSums[taskid], leftCol, rightCol, start, end = inputResultSize]() {
+            for (uint64_t i = start; i < end; i++) {
+              if (leftCol[i] == rightCol[i]) {
+                copy2ResultToSum(sum, i);
+              }
+            }
+          }));
+          break;
+        }
+        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &sum = parallelSums[taskid], leftCol, rightCol, start, end = start + step]() {
+          for (uint64_t i = start; i < end; i++) {
+            if (leftCol[i] == rightCol[i]) {
+              copy2ResultToSum(sum, i);
+            }
+          }
+        }));
+        start += step;
+        taskid ++;
+      }
+      resultSize = 1;
+      for (int i = 0; i < tmpResults.size(); i++) {
+        tmpResults[i].push_back(0);
+      }
+      for_each(vf.begin(), vf.end(), [](future<void> &x) {
+        x.wait();
+      });
+      for (int ii = 0; ii < parallelSums.size(); ii++) {
+        for (int i = 0; i < tmpResults.size(); i++) {
+          tmpResults[i][0] += parallelSums[ii][i];
+        }
+      }
+    } else {
+      std::vector<uint64_t> sum(tmpResults.size(), 0);
+      for (uint64_t i=0;i<input->resultSize;++i) {
+        if (leftCol[i]==rightCol[i])
+          copy2ResultToSum(sum, i);
+      }
+      resultSize = 1;
+      for (int i = 0; i < tmpResults.size(); i++) {
+        tmpResults[i].push_back(sum[i]);
+      }
     }
   } else {
-    for (uint64_t i=0;i<input->resultSize;++i) {
-      if (leftCol[i]==rightCol[i])
-        copy2Result(i);
+    if (inputResultSize > (MIN_PROBE_ITEM_CNT << 1)) {
+      uint32_t task_cnt = inputResultSize / MIN_PROBE_ITEM_CNT;
+      task_cnt = std::min(task_cnt, 32U);
+      size_t step = (inputResultSize + task_cnt - 1) / task_cnt;
+      size_t start = 0;
+      int taskid = 0;
+      std::vector<std::vector<uint64_t>> parallelPositions(task_cnt);
+      std::vector<std::future<size_t>> vf;
+      while (start < inputResultSize) {
+        if (start + step >= inputResultSize) {
+          vf.push_back(std::async(std::launch::async | std::launch::deferred, [&positions = parallelPositions[taskid], leftCol, rightCol, start, end = inputResultSize]() {
+            positions.reserve(end - start);
+            for (uint64_t i = start; i < end; i++) {
+              if (leftCol[i] == rightCol[i]) {
+                positions.push_back(i);
+              }
+            }
+            return positions.size();
+          }));
+          break;
+        }
+        vf.push_back(std::async(std::launch::async | std::launch::deferred, [&positions = parallelPositions[taskid], leftCol, rightCol, start, end = start + step]() {
+          positions.reserve(end - start);
+          for (uint64_t i = start; i < end; i++) {
+            if (leftCol[i] == rightCol[i]) {
+              positions.push_back(i);
+            }
+          }
+          return positions.size();
+        }));
+        start += step;
+        taskid++;
+      }
+      size_t pcnt = 0;
+      for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+        pcnt += x.get();
+      });
+      resultSize = pcnt;
+      for (int i = 0; i < tmpResults.size(); i++) {
+        tmpResults[i].reserve(resultSize);
+      }
+      uint64_t merge_position = 0;
+      std::vector<std::future<void>> mvf;
+      for (int ii = 0; ii < parallelPositions.size(); ii++) {
+        mvf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions = parallelPositions[ii], merge_position]() {
+          uint64_t index = merge_position;
+          for (auto &pos: positions) {
+            unsigned relColId=0;
+            for (unsigned cId=0;cId<copyData.size();++cId)
+            tmpResults[cId].push_back(copyData[cId][pos]);
+            index ++;
+          }
+        }));
+        merge_position += parallelPositions[ii].size();
+      }
+      for_each(mvf.begin(), mvf.end(), [](future<void> &x) {
+        x.wait();
+      });
+    } else {
+      for (uint64_t i=0;i<input->resultSize;++i) {
+        if (leftCol[i]==rightCol[i])
+          copy2Result(i);
+      }
     }
   }
 }
