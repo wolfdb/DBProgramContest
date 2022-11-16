@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-#include <unordered_set>
+#include <unordered_map>
 #include "Consts.hpp"
 
 using RelationId = unsigned;
@@ -23,19 +23,18 @@ class Relation {
 
   /// Sample count
   uint64_t sampleCount;
+  bool sampleAll = false;
+  uint32_t sampleStep;
 
   /// Sampled min max, set on the first scan
   std::vector<uint64_t> sample_maxs;
   std::vector<uint64_t> sample_mins;
-  std::vector<int64_t> sample_distinct_count;
 
   /// Sampled distinct values, set on second scan(if order is false)
-  std::vector<std::unordered_set<uint64_t>> sample_distinctVals;
-
-  /// Real min/max & histogram
-  std::vector<uint64_t> maxs;
-  std::vector<uint64_t> mins;
-  std::vector<int64_t> distinct_count;
+  std::vector<std::unordered_map<uint64_t, uint64_t>> sample_ndvs;
+  /// Compress the column if ndv < rowCount / 3
+  std::vector<std::vector<uint64_t*>> compressColumns;
+  std::vector<bool> needCompress;
 
   /// Stores a relation into a file (binary)
   void storeRelation(const std::string& fileName);

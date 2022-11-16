@@ -58,20 +58,16 @@ void Relation::dumpSQL(const string& fileName,unsigned relationId)
 void Relation::calcSampleCount()
   // Calculate the sample count
 {
-  if (this->rowCount < DBCONTEST_PAGE_ITEM_COUNT) {
+  if ((this->rowCount >> 1) <= MAX_SAMPLE_COUNT) {
     this->sampleCount = this->rowCount;
+    this->sampleAll = true;
+    this->sampleStep = 1;
     return;
   }
 
-  if ((this->rowCount >> 4) < DBCONTEST_PAGE_ITEM_COUNT) {
-    this->sampleCount = DBCONTEST_PAGE_ITEM_COUNT;
-    return;
-  }
-
-  // sample 1/16 of the data or 1MB, which is small
-  uint64_t sampleCount = this->rowCount >> 4;
-  sampleCount = DBCONTEST_ITEM_COUNT_ALIGN(sampleCount);
-  this->sampleCount = std::min(sampleCount, MAX_SAMPLE_ITEM_COUNT);
+  this->sampleCount = MAX_SAMPLE_COUNT;
+  this->sampleAll = false;
+  this->sampleStep = this->rowCount / this->sampleCount;
 }
 //---------------------------------------------------------------------------
 void Relation::buildHistogram(int idx)
@@ -79,32 +75,44 @@ void Relation::buildHistogram(int idx)
 {
   assert(idx < columns.size());
   uint64_t *column = this->columns[idx];
-  uint64_t tmp_max = column[0];
-  uint64_t tmp_min = column[0];
-  uint64_t pre = column[0];
-  uint64_t cnt = 1;
-  bool sorted = false;
-  bool asc = false;
-  bool desc = false;
-  for (int i = 1; i < this->sampleCount; i++) {
-    uint64_t val = column[i];
+  auto &ndv = this->sample_ndvs[idx];
+  uint64_t tmp_max = std::numeric_limits<uint64_t>::min();
+  uint64_t tmp_min = std::numeric_limits<uint64_t>::max();
+  const auto step = this->sampleStep;
+
+  ndv.reserve(sampleCount * 2);
+  uint64_t pos = 0;
+  for (int i = 0; i < this->sampleCount; i++) {
+    uint64_t val = column[pos];
     tmp_max = std::max(tmp_max, val);
     tmp_min = std::min(tmp_min, val);
+    ndv[val] ++;
+    pos += step;
+  }
 
-    if (sorted) {
-      if (val > pre) {
-        asc = true;
-      } else if (val < pre) {
-        desc = true;
+  // compress the data
+  if ((sampleCount / ndv.size()) > 3) {
+    this->needCompress[idx] = true;
+    if (!sampleAll) {
+      ndv.clear();
+      ndv.reserve(rowCount);
+      for (unsigned i = 0; i < rowCount; ++i) {
+        uint64_t val = column[i];
+        tmp_max = std::max(tmp_max, val);
+        tmp_min = std::min(tmp_min, val);
+        ndv[val]++;
       }
-      if (asc && desc) {
-        sorted = false;
-      }
-      if (val != pre) {
-        cnt ++;
-      }
-      pre = val;
     }
+    uint64_t *vals= new uint64_t[ndv.size() * 2];
+    uint64_t *cnts= vals + ndv.size();
+
+    uint64_t index = 0;
+    for (auto &it: ndv) {
+      vals[index] = it.first;
+      cnts[index++] = it.second;
+    }
+    compressColumns[idx].emplace_back(vals);
+    compressColumns[idx].emplace_back(cnts);
   }
 
   this->sample_maxs[idx] = tmp_max;
@@ -191,18 +199,14 @@ void Relation::loadRelation(const char* fileName)
   // resize sample vectors
   this->sample_maxs.resize(numColumns, std::numeric_limits<uint64_t>::min());
   this->sample_mins.resize(numColumns, std::numeric_limits<uint64_t>::max());
-  this->sample_distinct_count.resize(numColumns, 0);
-  this->sample_distinctVals.resize(numColumns);
+  this->sample_ndvs.resize(numColumns);
 
-  // resize real vectors
-  this->maxs.resize(numColumns, std::numeric_limits<uint64_t>::min());
-  this->mins.resize(numColumns, std::numeric_limits<uint64_t>::max());
-  this->distinct_count.resize(numColumns);
+  // resize compress columns
+  this->compressColumns.resize(numColumns);
+  this->needCompress.resize(numColumns, false);
 
   // calculate sample count we should read
   this->calcSampleCount();
-  assert(this->sampleCount == this->rowCount || this->sampleCount % DBCONTEST_PAGE_ITEM_COUNT == 0);
-  log_print("{}: sample {}/{} items for each column\n", fileName, this->sampleCount, this->rowCount);
 }
 //---------------------------------------------------------------------------
 Relation::Relation(const char* fileName) : ownsMemory(false)

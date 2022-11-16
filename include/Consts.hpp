@@ -2,6 +2,8 @@
 
 #include<thread>
 
+#define CACHE_LINE_SIZE 128
+
 #define DBCONTEST_PAGE_SIZE 4096
 #define DBCONTEST_PAGE_ITEM_COUNT (DBCONTEST_PAGE_SIZE >> 3)
 
@@ -15,6 +17,8 @@
 #define MAX_SAMPLE_SIZE 1048576UL
 
 #define MAX_SAMPLE_ITEM_COUNT (MAX_SAMPLE_SIZE >> 3)
+
+#define MAX_SAMPLE_COUNT 32768
 
 // minimal scan size 4MB
 #define MIN_SCAN_SIZE 4194304UL
@@ -31,7 +35,7 @@
 
 #define USE_ASYNC_JOIN 1
 
-#define USE_PARALLEL_QUERY 1
+#define USE_PARALLEL_QUERY 0
 
 #define USE_PARALLEL_BUILD_HASH_TABLE 1
 
