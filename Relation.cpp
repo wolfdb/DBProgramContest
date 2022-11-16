@@ -107,17 +107,17 @@ void Relation::buildHistogram(int idx)
   this->sample_mins[idx] = smin;
 
   // build histgram
-  auto h = make_histogram(axis::regular<>(HISTOGRAM_BUCKET_CNT, this->sample_mins[idx], this->sample_maxs[idx]));
-  if (sampleAll) {
-    for (int i = 0; i < this->sampleCount; i++) {
-      h(column[i]);
-    }
-  } else {
-    for (auto ele: sampleData) {
-      h(ele);
-    }
-  }
-  this->sample_histograms[idx].hist_ = std::move(h);
+  // auto h = make_histogram(axis::regular<>(HISTOGRAM_BUCKET_CNT, this->sample_mins[idx], this->sample_maxs[idx]));
+  // if (sampleAll) {
+  //   for (int i = 0; i < this->sampleCount; i++) {
+  //     h(column[i]);
+  //   }
+  // } else {
+  //   for (auto ele: sampleData) {
+  //     h(ele);
+  //   }
+  // }
+  // this->sample_histograms[idx].hist_ = std::move(h);
 }
 //---------------------------------------------------------------------------
 void Relation::calThenSetEstimateCost(FilterInfo &filter)

@@ -88,13 +88,68 @@ uint64_t Joiner::estimateCost(const SelectInfo &info, const QueryInfo& query)
   // estimate the cost of SelectInfo
 {
   auto relId = query.relationIds[info.binding];
-  uint64_t cost = getRelation(relId).rowCount;
-  for (auto& f : query.filters) {
-    if (f.filterColumn.binding==info.binding) {
-      cost = std::min(cost, f.eCost);
+  auto count = getRelation(relId).rowCount;
+  auto scount = getRelation(relId).sampleCount;
+  auto ndv = getRelation(relId).sample_distinctVals[info.colId].size();
+  // auto &hist = getRelation(relId).sample_histograms[info.colId];
+  auto smin = getRelation(relId).sample_mins[info.colId];
+  auto smax = getRelation(relId).sample_maxs[info.colId];
+  double sample_factor = static_cast<double>(count) / static_cast<double>(scount);
+  if (query.filterMap.find(info) != query.filterMap.end()) {
+    auto &filters = query.filterMap.at(info);
+    assert(filters.size() <= 2);
+    if (filters.size() == 1) {
+      auto constant = filters[0].constant;
+      switch (filters[0].comparison)
+      {
+      case FilterInfo::Comparison::Less: {
+        if (constant < smin) {
+          return 0;
+        } else if (constant > smax) {
+          return count;
+        } else {
+          return static_cast<uint64_t>(((constant - smin) / (double)(smax - smin)) * count);
+        }
+      }
+      case FilterInfo::Comparison::Greater: {
+        if (constant > smax) {
+          return 0;
+        } else if (constant < smin) {
+          return count;
+        } else {
+          return static_cast<uint64_t>(((smax - constant) / (double)(smax - smin)) * count);
+        }
+      }
+      case FilterInfo::Comparison::Equal: {
+        if (constant > smax || constant < smin) {
+          return 0;
+        } else if (scount == ndv) {
+          return 1;
+        } else {
+          return scount / ndv;
+        }
+      }
+      default:
+        break;
+      }
+    } else {
+      auto constant1 = filters[0].constant;
+      auto constant2 = filters[1].constant;
+      auto left = std::min(constant1, constant2);
+      auto right = std::max(constant1, constant2);
+      if (left > smax) {
+        return 0;
+      }
+      if (right < smin) {
+        return 0;
+      }
+      left = std::max(left, smin);
+      right = std::min(right, smax);
+      return static_cast<uint64_t>(((right - left) / (double)(smax - smin)) * count);
     }
+  } else {
+    return count;
   }
-  return cost;
 }
 //---------------------------------------------------------------------------
 enum QueryGraphProvides {  Left, Right, Both, None };
@@ -159,25 +214,15 @@ unique_ptr<Operator> Joiner::buildPlanTree(QueryInfo& query)
 unique_ptr<Operator> Joiner::buildMyPlanTree(QueryInfo& query)
   // my left-deep join tree
 {
-  // First calculate estimate row count for the Filter
-  for (auto &filter: query.filters) {
-    auto relId = filter.filterColumn.relId;
-    getRelation(relId).calThenSetEstimateCost(filter);
-#if PRINT_LOG
-    log_print("filter:{}, eCost:{}, rowCount:{}\n",
-      filter.comparison == FilterInfo::Comparison::Equal ? "=" : filter.comparison == FilterInfo::Comparison::Greater ? ">" : "<",
-      filter.eCost, filter.rowCount);
-#endif
-  }
-
   // Second for every Predicate(i.e. Join), add the operator to a PQ
   auto cmp = [](PredicateInfo &left, PredicateInfo &right) { return left.eCost < right.eCost; };
   for (auto &pInfo : query.predicates) {
+    auto leftCost = estimateCost(pInfo.left, query);
+    auto rightCost = estimateCost(pInfo.right, query);
     if (pInfo.left.binding == pInfo.right.binding) {
-      pInfo.eCost = estimateCost(pInfo.left, query);
-      pInfo.eCost = static_cast<uint64_t>(::sqrt(pInfo.eCost));
+      pInfo.eCost = static_cast<uint64_t>(::sqrt(leftCost + rightCost));
     } else {
-      pInfo.eCost = std::min(estimateCost(pInfo.left, query), estimateCost(pInfo.right, query));
+      pInfo.eCost = leftCost + rightCost;
     }
   }
   // sort the predicates
