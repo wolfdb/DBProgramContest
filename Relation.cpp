@@ -12,6 +12,7 @@
 #include "Log.hpp"
 //---------------------------------------------------------------------------
 using namespace std;
+using namespace boost::histogram;
 //---------------------------------------------------------------------------
 void Relation::storeRelation(const string& fileName)
   // Stores a relation into a binary file
@@ -58,20 +59,16 @@ void Relation::dumpSQL(const string& fileName,unsigned relationId)
 void Relation::calcSampleCount()
   // Calculate the sample count
 {
-  if (this->rowCount < DBCONTEST_PAGE_ITEM_COUNT) {
+  if (this->rowCount < MAX_SAMPLE_ITEM_COUNT) {
     this->sampleCount = this->rowCount;
-    return;
-  }
-
-  if ((this->rowCount >> 4) < DBCONTEST_PAGE_ITEM_COUNT) {
-    this->sampleCount = DBCONTEST_PAGE_ITEM_COUNT;
+    this->sampleAll = true;
     return;
   }
 
   // sample 1/16 of the data or 1MB, which is small
   uint64_t sampleCount = this->rowCount >> 4;
-  sampleCount = DBCONTEST_ITEM_COUNT_ALIGN(sampleCount);
   this->sampleCount = std::min(sampleCount, MAX_SAMPLE_ITEM_COUNT);
+  this->sampleAll = false;
 }
 //---------------------------------------------------------------------------
 void Relation::buildHistogram(int idx)
@@ -79,36 +76,48 @@ void Relation::buildHistogram(int idx)
 {
   assert(idx < columns.size());
   uint64_t *column = this->columns[idx];
-  uint64_t tmp_max = column[0];
-  uint64_t tmp_min = column[0];
-  uint64_t pre = column[0];
-  uint64_t cnt = 1;
-  bool sorted = false;
-  bool asc = false;
-  bool desc = false;
-  for (int i = 1; i < this->sampleCount; i++) {
-    uint64_t val = column[i];
-    tmp_max = std::max(tmp_max, val);
-    tmp_min = std::min(tmp_min, val);
-
-    if (sorted) {
-      if (val > pre) {
-        asc = true;
-      } else if (val < pre) {
-        desc = true;
-      }
-      if (asc && desc) {
-        sorted = false;
-      }
-      if (val != pre) {
-        cnt ++;
-      }
-      pre = val;
+  auto &distinctValue = this->sample_distinctVals[idx];
+  distinctValue.reserve(this->sampleCount);
+  uint64_t smax = std::numeric_limits<uint64_t>::min();
+  uint64_t smin = std::numeric_limits<uint64_t>::max();
+  vector<uint64_t> sampleData;
+  if (sampleAll) {
+    for (int i = 0; i < this->sampleCount; i++) {
+      smax = std::max(smax, column[i]);
+      smin = std::min(smin, column[i]);
+      distinctValue[column[i]]++;
     }
+  } else {
+    sampleData.reserve(this->sampleCount + 100);
+    uint64_t step = this->rowCount / this->sampleCount * 2;
+    for (int i = 0; i < this->rowCount; i += step) {
+      sampleData.push_back(column[i]);
+      sampleData.push_back(column[i+1]);
+      distinctValue[column[i]]++;
+      distinctValue[column[i+1]]++;
+      uint64_t tmpmax = std::max(column[i], column[i+1]);
+      uint64_t tmpmin = std::min(column[i], column[i+1]);
+      smax = std::max(smax, tmpmax);
+      smin = std::min(smin, tmpmin);
+    }
+    this->sampleCount = sampleData.size();
   }
 
-  this->sample_maxs[idx] = tmp_max;
-  this->sample_mins[idx] = tmp_min;
+  this->sample_maxs[idx] = smax;
+  this->sample_mins[idx] = smin;
+
+  // build histgram
+  auto h = make_histogram(axis::regular<>(HISTOGRAM_BUCKET_CNT, this->sample_mins[idx], this->sample_maxs[idx]));
+  if (sampleAll) {
+    for (int i = 0; i < this->sampleCount; i++) {
+      h(column[i]);
+    }
+  } else {
+    for (auto ele: sampleData) {
+      h(ele);
+    }
+  }
+  this->sample_histograms[idx].hist_ = std::move(h);
 }
 //---------------------------------------------------------------------------
 void Relation::calThenSetEstimateCost(FilterInfo &filter)
@@ -189,20 +198,14 @@ void Relation::loadRelation(const char* fileName)
   }
 
   // resize sample vectors
-  this->sample_maxs.resize(numColumns, std::numeric_limits<uint64_t>::min());
-  this->sample_mins.resize(numColumns, std::numeric_limits<uint64_t>::max());
-  this->sample_distinct_count.resize(numColumns, 0);
+  this->sample_maxs.resize(numColumns);
+  this->sample_mins.resize(numColumns);
   this->sample_distinctVals.resize(numColumns);
-
-  // resize real vectors
-  this->maxs.resize(numColumns, std::numeric_limits<uint64_t>::min());
-  this->mins.resize(numColumns, std::numeric_limits<uint64_t>::max());
-  this->distinct_count.resize(numColumns);
+  this->sample_histograms.resize(numColumns);
 
   // calculate sample count we should read
   this->calcSampleCount();
-  assert(this->sampleCount == this->rowCount || this->sampleCount % DBCONTEST_PAGE_ITEM_COUNT == 0);
-  log_print("{}: sample {}/{} items for each column\n", fileName, this->sampleCount, this->rowCount);
+  // cerr << "relation file: " << fileName << ": sample " << this->sampleCount  << "/" << this->rowCount << " rows for each column" << endl;
 }
 //---------------------------------------------------------------------------
 Relation::Relation(const char* fileName) : ownsMemory(false)

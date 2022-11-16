@@ -30,10 +30,7 @@ void Joiner::addRelation(const char* fileName)
 //---------------------------------------------------------------------------
 void Joiner::buildHistogram()
 {
-#if PRINT_LOG
-  log_print("max concurrency: {}\n", std::thread::hardware_concurrency());
-  milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-#endif
+  // milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   boost::asio::thread_pool pool(std::thread::hardware_concurrency());
   for (auto &relation : relations) {
     for (int i = 0; i < relation.columns.size(); i++) {
@@ -44,10 +41,24 @@ void Joiner::buildHistogram()
     }
   }
   pool.join();
-#if PRINT_LOG
-  milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  log_print("build histograms run time: {} ms\n\n", end.count() - start.count());
-#endif
+  // milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+  // cerr << "build histograms run time: " << end.count() - start.count() << " ms\n";
+  // int tmpcnt = 0;
+  // for (auto &relation : relations) {
+  //   if (tmpcnt < 15) {
+  //   cerr << "relation: " << tmpcnt << "; sample cnt: " << relation.sampleCount << endl;
+  //   for (int i = 0; i < relation.columns.size(); i++) {
+  //       relation.printHistogram(i);
+  //   }
+  //   }
+  //   tmpcnt ++;
+  // }
+}
+//---------------------------------------------------------------------------
+void Relation::printHistogram(int idx)
+  // print histogram of column idx
+{
+  cerr << "column " << idx << ", max: " << sample_maxs[idx] << ", min: " << sample_mins[idx] << ", ndv: " << sample_distinctVals[idx].size() << endl;
 }
 //---------------------------------------------------------------------------
 Relation& Joiner::getRelation(unsigned relationId)
