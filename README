@@ -22,3 +22,9 @@ Run Harness Test
 #run public workload
 ./runTestharness.sh workloads/public
 ```
+
+Third party libraries:
+
+- boost_histogram
+- tbb
+- fmt

@@ -122,7 +122,6 @@ void Relation::buildHistogram(int idx)
 void Relation::calThenSetEstimateCost(FilterInfo &filter)
   // Calculate the estimate cost
 {
-  unsigned idx = filter.filterColumn.colId;
   auto count = this->rowCount;
   auto scount = this->sampleCount;
   double sample_factor = static_cast<double>(count) / static_cast<double>(scount);

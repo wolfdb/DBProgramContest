@@ -2,6 +2,7 @@
 #include <iostream>
 #include <future>
 #include <array>
+#include "Joiner.hpp"
 #include "Operators.hpp"
 #include "Log.hpp"
 #include "Consts.hpp"
@@ -9,32 +10,59 @@
 using namespace std;
 using namespace std::chrono;
 //---------------------------------------------------------------------------
-bool Scan::require(SelectInfo info)
+vector<Column<uint64_t>>& Operator::getResults()
+// Get materialized results
+{
+  return results;
+}
+//---------------------------------------------------------------------------
+uint64_t Operator::getResultsSize() {
+  return resultSize*results.size();
+}
+//---------------------------------------------------------------------------
+bool Scan::require(SelectInfo &info)
   // Require a column and add it to results
 {
   if (info.binding!=relationBinding)
     return false;
   assert(info.colId<relation.columns.size());
-  resultColumns.push_back(relation.columns[info.colId]);
-  select2ResultColId[info]=resultColumns.size()-1;
+  if (select2ResultColId.find(info) == select2ResultColId.end()) {
+    results.emplace_back(1);
+    infos.push_back(info);
+    select2ResultColId[info] = results.size() - 1;
+  }
   return true;
+}
+//---------------------------------------------------------------------------
+uint64_t Scan::getResultsSize() {
+  return results.size()*relation.rowCount; 
 }
 //---------------------------------------------------------------------------
 void Scan::run()
   // Run
 {
-  // Nothing to do
-  resultSize=relation.rowCount;
+  // return compressed data
+  if (infos.size() == 1 && !relation.compressColumns[infos[0].colId].empty()) {
+    uint64_t *data = relation.compressColumns[infos[0].colId][0];
+    uint64_t *length = relation.compressColumns[infos[0].colId][1];
+    resultSize = length - data;
+    results[0].addTuples(0, data, resultSize);
+    results[0].fix();
+    results.emplace_back(1);
+    results[1].addTuples(0, length, resultSize);
+    results[1].fix();
+    counted = 2;
+  } else {
+    resultSize = relation.rowCount;
+    for (int i = 0; i < infos.size(); i++) {
+      results[i].addTuples(0, relation.columns[infos[i].colId], resultSize);
+      results[i].fix();
+    }
+  }
   log_print("scan resultSize: {}\n", resultSize);
 }
 //---------------------------------------------------------------------------
-vector<uint64_t*> Scan::getResults()
-  // Get materialized results
-{
-  return resultColumns;
-}
-//---------------------------------------------------------------------------
-bool FilterScan::require(SelectInfo info)
+bool FilterScan::require(SelectInfo &info)
   // Require a column and add it to results
 {
   if (info.binding!=relationBinding)
@@ -42,31 +70,19 @@ bool FilterScan::require(SelectInfo info)
   assert(info.colId<relation.columns.size());
   if (select2ResultColId.find(info)==select2ResultColId.end()) {
     // Add to results
-    inputData.push_back(relation.columns[info.colId]);
-    tmpResults.emplace_back();
-    unsigned colId=tmpResults.size()-1;
+    infos.push_back(info);
+    // inputData.push_back(relation.columns[info.colId]);
+    // tmpResults.emplace_back();
+    unsigned colId=infos.size()-1;
     select2ResultColId[info]=colId;
   }
   return true;
 }
 //---------------------------------------------------------------------------
-void FilterScan::copy2Result(uint64_t id)
-  // Copy to result
-{
-  for (unsigned cId=0;cId<inputData.size();++cId)
-    tmpResults[cId].push_back(inputData[cId][id]);
-  ++resultSize;
-}
-void FilterScan::copy2ResultP(std::vector<std::vector<uint64_t>> &result, uint64_t id)
-{
-  for (unsigned cId=0;cId<inputData.size();++cId)
-    result[cId].push_back(inputData[cId][id]);
-}
-//---------------------------------------------------------------------------
 bool FilterScan::applyFilter(uint64_t i,FilterInfo& f)
   // Apply filter
 {
-  auto compareCol=relation.columns[f.filterColumn.colId];
+  auto compareCol = counted == 2 ? relation.compressColumns[f.filterColumn.colId][0] : relation.columns[f.filterColumn.colId];
   auto constant=f.constant;
   switch (f.comparison) {
     case FilterInfo::Comparison::Equal:
@@ -82,167 +98,130 @@ bool FilterScan::applyFilter(uint64_t i,FilterInfo& f)
 void FilterScan::run()
   // Run
 {
-#if PRINT_LOG
-  milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  milliseconds end;
-#endif
-  if (relation.rowCount > (MIN_FILTER_ITEM_CNT << 1)) {
-    uint32_t filter_cnt = std::min((uint32_t)(relation.rowCount / MIN_FILTER_ITEM_CNT), MAX_FILTER_TAKS_CNT);
-    std::vector<std::vector<uint64_t>> parallelPostions(filter_cnt, std::vector<uint64_t>());
-    size_t step = (relation.rowCount + filter_cnt - 1) / filter_cnt;
-    size_t start = 0;
-    int filterid = 0;
-    std::vector<std::future<size_t>> vf;
-    while (start < relation.rowCount) {
-      if (start + step >= relation.rowCount) {
-        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions = parallelPostions[filterid], start, end = relation.rowCount]() {
-          if (filters.size() == 1) {
-            auto &f = filters[0];
-            auto constant=f.constant;
-            auto compareCol=relation.columns[f.filterColumn.colId];
-            switch (f.comparison)
-            {
-              case FilterInfo::Comparison::Equal: {
-                for (uint64_t i = start; i < end; i++) {
-                  if (compareCol[i]==constant)
-                    positions.push_back(i);
-                }
-                break;
-              }
-              case FilterInfo::Comparison::Greater: {
-                for (uint64_t i = start; i < end; i++) {
-                  if (compareCol[i] > constant)
-                    positions.push_back(i);
-                }
-                break;
-              }
-
-              case FilterInfo::Comparison::Less: {
-                for (uint64_t i = start; i < end; i++) {
-                  if (compareCol[i] < constant)
-                    positions.push_back(i);
-                }
-                break;
-              }
-              default:
-                break;
-            }
-          } else {
-            bool pass=true;
-            for (uint64_t i = start; i < end; i++) {
-              for (auto& f : filters) {
-                pass&=applyFilter(i,f);
-              }
-              if (pass)
-                positions.push_back(i);
-              pass = true;
-            }
-          }
-          return positions.size();
-        }));
+  uint64_t size = relation.rowCount;
+  if (infos.size() == 1) {
+    bool pass = true;
+    for (auto &f: filters) {
+      if (f.filterColumn.colId != infos[0].colId) {
+        pass = false;
         break;
       }
-      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions = parallelPostions[filterid], start, end = start + step]() {
-        if (filters.size() == 1) {
-          auto &f = filters[0];
-          auto constant=f.constant;
-          auto compareCol=relation.columns[f.filterColumn.colId];
-          switch (f.comparison)
-          {
-            case FilterInfo::Comparison::Equal: {
-              for (uint64_t i = start; i < end; i++) {
-                if (compareCol[i]==constant)
-                  positions.push_back(i);
-              }
-              break;
-            }
-            case FilterInfo::Comparison::Greater: {
-              for (uint64_t i = start; i < end; i++) {
-                if (compareCol[i] > constant)
-                  positions.push_back(i);
-              }
-              break;
-            }
+    }
+    if (pass && !relation.compressColumns[infos[0].colId].empty()) {
+      counted = 2;
+      size = relation.compressColumns[infos[0].colId][1] - relation.compressColumns[infos[0].colId][0];
+    }
+  }
 
-            case FilterInfo::Comparison::Less: {
-              for (uint64_t i = start; i < end; i++) {
-                if (compareCol[i] < constant)
-                  positions.push_back(i);
-              }
-              break;
-            }
-            default:
-              break;
-          }
-        } else {
-          bool pass = true;
-          for (uint64_t i = start; i < end; i++) {
-            for (auto& f : filters) {
-              pass&=applyFilter(i,f);
-            }
-            if (pass)
-              positions.push_back(i);
-            pass = true;
-          }
-        }
-        return positions.size();
-      }));
-      start += step;
-      filterid ++;
-    }
+  uint32_t filter_cnt = std::min((uint32_t)(size / MIN_FILTER_ITEM_CNT), MAX_FILTER_TAKS_CNT);
+  if (filter_cnt == 0) {
+    filter_cnt = 1;
+  }
+  size_t step = size / filter_cnt;
+  size_t remain = size % filter_cnt;
 
-    // wait and merge the result
-    size_t pcnt = 0;
-    for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
-      pcnt += x.get();
-    });
-    resultSize = pcnt;
-    for (int i = 0; i < tmpResults.size(); i++) {
-      tmpResults[i].reserve(resultSize);
-    }
-    std::vector<std::future<void>> mvf;
-    uint64_t merge_position = 0;
-    for (auto &positions: parallelPostions) {
-      mvf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions, merge_position]() {
-        uint64_t index = merge_position;
-        for (uint64_t pos: positions) {
-          for (unsigned cId=0;cId<inputData.size();++cId)
-            tmpResults[cId][index] = inputData[cId][pos];
-          index ++;
-        }
-      }));
-      merge_position += positions.size();
-    }
-    for_each(mvf.begin(), mvf.end(), [](future<void> &x) {
-      x.wait();
-    });
+  if (counted == 2) {
+    inputData.emplace_back(relation.compressColumns[infos[0].colId][0]);
+    inputData.emplace_back(relation.compressColumns[infos[0].colId][1]);
+    results.emplace_back(filter_cnt);
+    results.emplace_back(filter_cnt);
   } else {
-    for (uint64_t i=0;i<relation.rowCount;++i) {
-      bool pass=true;
-      for (auto& f : filters) {
-        pass&=applyFilter(i,f);
-      }
-      if (pass)
-        copy2Result(i);
+    for (auto &sinfo: infos) {
+      inputData.emplace_back(relation.columns[sinfo.colId]);
+      results.emplace_back(filter_cnt);
+    }
+    if (counted) {
+      results.emplace_back(filter_cnt);
     }
   }
-#if PRINT_LOG
-  end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  log_print("filterScan resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
-#endif
-}
-//---------------------------------------------------------------------------
-vector<uint64_t*> Operator::getResults()
-  // Get materialized results
-{
-  vector<uint64_t*> resultVector;
-  for (auto& c : tmpResults) {
-    resultVector.push_back(c.data());
+  tmpResults.resize(filter_cnt);
+  std::vector<std::future<size_t>> vf;
+  uint64_t start = 0;
+  for (unsigned i = 0; i < filter_cnt; i++) {
+    uint64_t len = step;
+    if (remain) {
+      len ++;
+      remain --;
+    }
+    vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, filterid = i, start, end = start + len]() {
+      auto &localResults = tmpResults[filterid];
+      auto colSize = inputData.size();
+      for (int j = 0; j < inputData.size(); j++) {
+        localResults.emplace_back();
+      }
+      if (counted) {
+        localResults.emplace_back();
+      }
+      if (filters.size() == 1) {
+        auto &f = filters[0];
+        auto constant=f.constant;
+        auto compareCol = counted == 2 ? relation.compressColumns[f.filterColumn.colId][0] : relation.columns[f.filterColumn.colId];
+        switch (f.comparison) {
+          case FilterInfo::Comparison::Equal: {
+            for (uint64_t i = start; i < end; i++) {
+              if (compareCol[i]==constant) {
+                for (unsigned cId = 0; cId < colSize; cId++) {
+                  localResults[cId].push_back(inputData[cId][i]);
+                }
+              }
+            }
+            break;
+          }
+          case FilterInfo::Comparison::Greater: {
+            for (uint64_t i = start; i < end; i++) {
+              if (compareCol[i] > constant) {
+                for (unsigned cId = 0; cId < colSize; cId++) {
+                  localResults[cId].push_back(inputData[cId][i]);
+                }
+              }
+            }
+            break;
+          }
+          case FilterInfo::Comparison::Less: {
+            for (uint64_t i = start; i < end; i++) {
+              if (compareCol[i] < constant) {
+                for (unsigned cId = 0; cId < colSize; cId++) {
+                  localResults[cId].push_back(inputData[cId][i]);
+                }
+              }
+            }
+            break;
+          }
+        }
+      } else {
+        bool pass=true;
+        for (uint64_t i = start; i < end; i++) {
+          for (auto& f : filters) {
+            pass&=applyFilter(i,f);
+          }
+          if (pass) {
+            for (unsigned cId = 0; cId < colSize; cId++) {
+              localResults[cId].push_back(inputData[cId][i]);
+            }
+          }
+          pass = true;
+        }
+      }
+      // add to results
+      for (unsigned cId = 0; cId < colSize; cId++) {
+        results[cId].addTuples(filterid, localResults[cId].data(), localResults[cId].size());
+      }
+      return localResults[0].size();
+    }));
+    start += len;
   }
-  return resultVector;
+
+  size_t pcnt = 0;
+  for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+    pcnt += x.get();
+  });
+  resultSize = pcnt;
+  for (unsigned cId = 0; cId < inputData.size(); cId++) {
+    results[cId].fix();
+  }
 }
 //---------------------------------------------------------------------------
-bool Join::require(SelectInfo info)
+bool Join::require(SelectInfo &info)
   // Require a column and add it to results
 {
   if (requestedColumns.count(info)==0) {
@@ -257,42 +236,9 @@ bool Join::require(SelectInfo info)
     if (!success)
       return false;
 
-    tmpResults.emplace_back();
     requestedColumns.emplace(info);
   }
   return true;
-}
-//---------------------------------------------------------------------------
-void Join::copy2Result(uint64_t leftId,uint64_t rightId)
-  // Copy to result
-{
-  unsigned relColId=0;
-  for (unsigned cId=0;cId<copyLeftData.size();++cId)
-    tmpResults[relColId++].push_back(copyLeftData[cId][leftId]);
-
-  for (unsigned cId=0;cId<copyRightData.size();++cId)
-    tmpResults[relColId++].push_back(copyRightData[cId][rightId]);
-  ++resultSize;
-}
-void Join::copy2ResultToSum(std::vector<uint64_t> &sum, uint64_t leftId, uint64_t rightId)
-  // Copy to result
-{
-  unsigned relColId=0;
-  for (unsigned cId=0;cId<copyLeftData.size();++cId)
-    sum[relColId++] += copyLeftData[cId][leftId];
-
-  for (unsigned cId=0;cId<copyRightData.size();++cId)
-    sum[relColId++] += copyRightData[cId][rightId];
-}
-void Join::copy2ResultP(std::vector<std::vector<uint64_t>> &results, uint64_t leftId,uint64_t rightId)
-  // Copy to result
-{
-  unsigned relColId=0;
-  for (unsigned cId=0;cId<copyLeftData.size();++cId)
-    results[relColId++].push_back(copyLeftData[cId][leftId]);
-
-  for (unsigned cId=0;cId<copyRightData.size();++cId)
-    results[relColId++].push_back(copyRightData[cId][rightId]);
 }
 //---------------------------------------------------------------------------
 void Join::run()
@@ -326,21 +272,13 @@ void Join::run()
   // Resolve the input columns
   unsigned resColId=0;
   for (auto& info : requestedColumnsLeft) {
-    copyLeftData.push_back(leftInputData[left->resolve(info)]);
     select2ResultColId[info]=resColId++;
   }
   for (auto& info : requestedColumnsRight) {
-    copyRightData.push_back(rightInputData[right->resolve(info)]);
     select2ResultColId[info]=resColId++;
   }
 
   if (left->resultSize == 0) {
-    if (isParentSum()) {
-      for (int i = 0; i < tmpResults.size(); i++) {
-        tmpResults[i].push_back(0);
-      }
-      resultSize = 1;
-    }
 #if PRINT_LOG
     end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
     log_print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
@@ -348,609 +286,491 @@ void Join::run()
     return;
   }
 
+  if (requestedColumnsLeft.size() == 0 || 
+      (requestedColumnsLeft.size() == 1 && requestedColumnsLeft[0] == pInfo.left)) {
+    cntBuilding = true;
+  }
+
+  if (requestedColumnsLeft.size() + requestedColumnsRight.size() == 1) {
+    auto &sInfo = requestedColumnsLeft.size() == 1 ? requestedColumnsLeft[0] : requestedColumnsRight[0];
+    counted = Joiner::relations[sInfo.relId].needCompress[sInfo.colId];
+  }
+
+  if ((left->counted || right->counted || cntBuilding) && !counted) {
+    counted = 2;
+  }
+
   log_print("leftBinding: {}, leftColId: {}  rightBinding: {}, rightColId: {}\n", pInfo.left.binding, pInfo.left.colId, pInfo.right.binding, pInfo.right.colId);
 
-  auto leftColId=left->resolve(pInfo.left);
-  auto rightColId=right->resolve(pInfo.right);
-  auto leftKeyColumn=leftInputData[leftColId];
-  auto rightKeyColumn=rightInputData[rightColId];
+  colId[0]=left->resolve(pInfo.left);
+  colId[1]=right->resolve(pInfo.right);
   auto leftResultSize = left->resultSize;
   auto rightResultSize = right->resultSize;
 
-if (!isParentSum()) {
-  // If left resultSize == 1, no not need to build hash table
-  if (leftResultSize == 1) {
-    auto leftKey = leftKeyColumn[0];
-    if (rightResultSize > (MIN_PROBE_ITEM_CNT << 1)) {
-      uint32_t task_cnt = 8;
-      size_t step = (rightResultSize + task_cnt - 1) / task_cnt;
-      size_t start = 0;
-      int taskid = 0;
-      std::vector<std::vector<uint64_t>> parallelPositions(task_cnt);
-      std::vector<std::future<size_t>> vf;
-      while (start < rightResultSize) {
-        if (start + step >= rightResultSize) {
-          vf.push_back(std::async(std::launch::async | std::launch::deferred, [&positions = parallelPositions[taskid], leftKey, rightKeyColumn, start, end = rightResultSize]() {
-            for (uint64_t i = start; i < end; i++) {
-              if (leftKey == rightKeyColumn[i]) {
-                positions.push_back(i);
-              }
-            }
-            return positions.size();
-          }));
-          break;
-        }
-        vf.push_back(std::async(std::launch::async | std::launch::deferred, [&positions = parallelPositions[taskid], leftKey, rightKeyColumn, start, end = start + step]() {
-          for (uint64_t i = start; i < end; i++) {
-            if (leftKey == rightKeyColumn[i]) {
-              positions.push_back(i);
-            }
-          }
-          return positions.size();
-        }));
-        start += step;
-        taskid ++;
-      }
+  // cerr << "leftResultSize: " << leftResultSize << "; rightResultSize: " << rightResultSize << endl;
 
-      size_t pcnt = 0;
-      for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
-        pcnt += x.get();
-        // log_print("subtasks probe get {} results\n", pcnt);
-      });
-      resultSize = pcnt;
-      // merge the results
-      for (int i = 0; i < tmpResults.size(); i++) {
-        tmpResults[i].reserve(resultSize);
-      }
-      uint64_t merge_position = 0;
-      std::vector<std::future<void>> mvf;
-      for (int ii = 0; ii < parallelPositions.size(); ii++) {
-        mvf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions = parallelPositions[ii], merge_position]() {
-          uint64_t index = merge_position;
-          for (auto pos: positions) {
-            unsigned relColId=0;
-            for (unsigned cId=0;cId<copyLeftData.size();++cId)
-              tmpResults[relColId++][index] = copyLeftData[cId][0];
-            for (unsigned cId=0;cId<copyRightData.size();++cId)
-              tmpResults[relColId++][index] = copyRightData[cId][pos];
-            index ++;
-          }
-        }));
-        merge_position += parallelPositions[ii].size();
-      }
-      for_each(mvf.begin(), mvf.end(), [](future<void> &x) {
-        x.wait();
-      });
-    } else {
-      for (uint64_t i=0; i< rightResultSize; ++i) {
-        if (leftKey == rightKeyColumn[i]) {
-          copy2Result(0, i);
-        }
-      }
+  partitionCnt = CNT_PARTITIONS(left->resultSize * 8 * 2, PARTITION_SIZE);  // uint64*2(key, value)
+  if (partitionCnt < 32) {
+    partitionCnt = 32;
+  }
+
+  partitionTable[0].reserve(left->getResultsSize());
+  partitionTable[1].reserve(right->getResultsSize());
+
+  for (uint64_t i = 0; i < partitionCnt; i++) {
+    partition[0].emplace_back();
+    partition[1].emplace_back();
+    for (unsigned j = 0; j < leftInputData.size(); j++) {
+      partition[0][i].emplace_back();
     }
-#if PRINT_LOG
-    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-    log_print("left resultSize == 1, join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
-#endif
+    for (unsigned j = 0; j < rightInputData.size(); j++) {
+      partition[1][i].emplace_back();
+    }
+    tmpResults.emplace_back();
+  }
+
+  auto leftTaskCnt = std::min((uint32_t)(leftResultSize / MIN_PARTITION_TABLE_SIZE), MAX_TASK_CNT);
+  auto rightTaskCnt = std::min((uint32_t)(rightResultSize / MIN_PARTITION_TABLE_SIZE), MAX_TASK_CNT);
+  if (leftTaskCnt == 0) leftTaskCnt = 1;
+  if (rightTaskCnt == 0) rightTaskCnt = 1;
+  taskCnt[0] = leftTaskCnt;
+  taskCnt[1] = rightTaskCnt;
+  taskLength[0] = leftResultSize / leftTaskCnt;
+  taskLength[1] = rightResultSize / rightTaskCnt;
+  taskRemain[0] = leftResultSize % leftTaskCnt;
+  taskRemain[1] = rightResultSize % rightTaskCnt;
+  histograms[0].resize(leftTaskCnt);
+  histograms[1].resize(rightTaskCnt);
+
+  // Partition Phase
+  std::vector<std::future<void>> vf;
+  vf.push_back(std::async(std::launch::async | std::launch::deferred, [this]() {
+    this->partitionLeft();
+  }));
+  vf.push_back(std::async(std::launch::async | std::launch::deferred, [this](){
+    this->partitionRight();
+  }));
+  for_each(vf.begin(), vf.end(), [](future<void> &x) {
+    x.wait();
+  });
+
+  // Determain sub joins
+  vector<unsigned> subJoins;
+  for (int i = 0; i < partitionCnt; i++) {
+    if (partitionLength[0][i] != 0 && partitionLength[1][i] != 0) {
+      // cerr << "partition " << i << endl;
+      subJoins.push_back(i);
+    }
+  }
+  if (subJoins.size() == 0) {
+    for (unsigned cId=0; cId < requestedColumns.size(); cId++) {
+      results[cId].fix();
+    }
+    if (counted) {
+      results.back().fix();
+    }
     return;
   }
 
-  // Build phase
-#if PRINT_LOG
-  tmpms = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-#endif
-  uint32_t build_cnt = 1;
-#if USE_PARALLEL_BUILD_HASH_TABLE
-  if (leftResultSize > (MIN_BUILD_ITEM_CNT << 1)) {
-    build_cnt = std::min((uint32_t)(leftResultSize / MIN_BUILD_ITEM_CNT), MAX_BUILD_TASK_CNT);
-    hashTables.resize(build_cnt);
-    size_t bstep = (leftResultSize + build_cnt - 1) / build_cnt;
-    size_t bstart = bstep;
-    int buildid = 0;
-    std::vector<std::future<void>> bvf;
-    while (bstart < leftResultSize) {
-      buildid ++;
-      if (bstart + bstep >= leftResultSize) {
-        bvf.push_back(std::async(std::launch::async | std::launch::deferred , [&hashTable = hashTables[buildid], leftKeyColumn, bstart, bend = leftResultSize]() {
-          hashTable.reserve((bend - bstart) * 2);
-          for (uint32_t i = bstart; i < bend; i++) {
-            hashTable.emplace(leftKeyColumn[i], i);
-          }
-        }));
-        break;
-      }
-      bvf.push_back(std::async(std::launch::async | std::launch::deferred , [&hashTable = hashTables[buildid], leftKeyColumn, bstart, bend = bstart + bstep]() {
-        hashTable.reserve((bend - bstart) * 2);
-        for (uint32_t i = bstart; i < bend; i++) {
-          hashTable.emplace(leftKeyColumn[i], i);
-        }
-      }));
-      bstart += bstep;
-    }
-    hashTables[0].reserve(bstep * 2);
-    for (uint32_t i = 0; i < bstep; i++) {
-      hashTables[0].emplace(leftKeyColumn[i], i);
-    }
-    for_each(bvf.begin(), bvf.end(), [](future<void> &x) { x.wait(); });
+  if (cntBuilding) {
+    hashTableCnts.resize(partitionCnt, NULL);
   } else {
-    hashTables.resize(1);
-    hashTables[0].reserve(leftResultSize * 2);
-    for (uint32_t i = 0; i < leftResultSize; i++) {
-      hashTables[0].emplace(leftKeyColumn[i], i);
-    }
-  }
-#else
-  hashTable.reserve(left->resultSize*2);
-  for (uint64_t i=0,limit=i+left->resultSize;i!=limit;++i) {
-    hashTable.emplace(leftKeyColumn[i],i);
-  }
-#endif
-#if PRINT_LOG
-  end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  log_print("Left result size: {} build hashmap time {} ms\n", leftResultSize, end.count() - tmpms.count());
-  tmpms = end;
-#endif
-  // Probe phase
-#if PRINT_LOG
-  log_print("right result size: {}, is range: false\n", rightResultSize);
-#endif
-
-  if (rightResultSize > (MIN_PROBE_ITEM_CNT << 1)) {
-    uint32_t task_cnt = (32 + build_cnt - 1) / build_cnt;
-    task_cnt = std::min(task_cnt, MAX_PROBE_TASK_CNT);
-    size_t step = (rightResultSize + task_cnt - 1) / task_cnt;
-    size_t start = 0;
-    int taskid = 0;
-    std::vector<std::vector<std::array<uint64_t, 2>>> parallelPositions(task_cnt * build_cnt);
-    std::vector<std::future<size_t>> vf;
-#if USE_PARALLEL_BUILD_HASH_TABLE
-    while (start < rightResultSize) {
-      if (start + step >= rightResultSize) {
-        for (uint32_t ii = 0; ii < build_cnt; ii++) {
-          vf.push_back(std::async(std::launch::async | std::launch::deferred, [&hashTable = hashTables[ii], &positions = parallelPositions[taskid * build_cnt + ii], rightKeyColumn, start, end = rightResultSize]() {
-            for (uint64_t i = start; i < end; i++) {
-              auto rightKey = rightKeyColumn[i];
-              auto range = hashTable.equal_range(rightKey);
-              for (auto iter = range.first; iter != range.second; ++iter) {
-                positions.push_back({iter->second, i});
-              }
-            }
-            return positions.size();
-          }));
-        }
-        break;
-      }
-      for (uint32_t ii = 0; ii < build_cnt; ii++) {
-        vf.push_back(std::async(std::launch::async | std::launch::deferred, [&hashTable = hashTables[ii], &positions = parallelPositions[taskid * build_cnt + ii], rightKeyColumn, start, end = start + step]() {
-          for (uint32_t i = start; i < end; i++) {
-            auto rightKey = rightKeyColumn[i];
-            auto range = hashTable.equal_range(rightKey);
-            for (auto iter = range.first; iter != range.second; ++iter) {
-              positions.push_back({iter->second, i});
-            }
-          }
-          return positions.size();
-        }));
-      }
-      start += step;
-      taskid ++;
-    }
-#else // USE_PARALLEL_BUILD_HASH_TABLE
-    while (start < rightResultSize) {
-      if (start + step >= rightResultSize) {
-        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions = parallelPositions[taskid], rightKeyColumn, start, end = rightResultSize]() {
-          for (uint32_t i = start; i < end; i++) {
-            auto rightKey = rightKeyColumn[i];
-            auto range = hashTable.equal_range(rightKey);
-            for (auto iter = range.first; iter != range.second; ++iter) {
-              positions.push_back({iter->second, i});
-            }
-          }
-          return positions.size();
-        }));
-        break;
-      }
-      vf.push_back(std::async(std::launch::async | std::launch::deferred , [this, &positions = parallelPositions[taskid], rightKeyColumn, start, end = start + step]() {
-        for (uint32_t i = start; i < end; i++) {
-          auto rightKey = rightKeyColumn[i];
-          auto range = hashTable.equal_range(rightKey);
-          for (auto iter = range.first; iter != range.second; ++iter) {
-            positions.push_back({iter->second, i});
-          }
-        }
-        return positions.size();
-      }));
-      start += step;
-      taskid ++;
-    }
-#endif
-    // wait for the results
-    size_t pcnt = 0;
-    for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
-      pcnt += x.get();
-      // log_print("subtasks probe get {} results\n", pcnt);
-    });
-    resultSize = pcnt;
-    // merge the results
-    for (int i = 0; i < tmpResults.size(); i++) {
-      tmpResults[i].reserve(resultSize);
-    }
-    uint64_t merge_position = 0;
-    std::vector<std::future<void>> mvf;
-    for (int ii = 0; ii < parallelPositions.size(); ii++) {
-      mvf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions = parallelPositions[ii], merge_position]() {
-        uint64_t index = merge_position;
-        for (auto &pos: positions) {
-          unsigned relColId=0;
-          for (unsigned cId=0;cId<copyLeftData.size();++cId)
-            tmpResults[relColId++][index] = copyLeftData[cId][pos[0]];
-          for (unsigned cId=0;cId<copyRightData.size();++cId)
-            tmpResults[relColId++][index] = copyRightData[cId][pos[1]];
-          index ++;
-        }
-      }));
-      merge_position += parallelPositions[ii].size();
-    }
-    for_each(mvf.begin(), mvf.end(), [](future<void> &x) {
-      x.wait();
-    });
-  } else {    // MIN_PROBE_ITEM_CNT
-#if USE_PARALLEL_BUILD_HASH_TABLE
-    std::vector<std::vector<std::array<uint64_t, 2>>> parallelPositions(build_cnt);
-    std::vector<std::future<size_t>> vf;
-    for (uint32_t ii = 0; ii < build_cnt; ii++) {
-      vf.push_back(std::async(std::launch::async | std::launch::deferred, [&hashTable = hashTables[ii], &positions = parallelPositions[ii], rightKeyColumn, start = 0, end = rightResultSize]() {
-        for (uint32_t i = start; i < end; i++) {
-          auto rightKey = rightKeyColumn[i];
-          auto range = hashTable.equal_range(rightKey);
-          for (auto iter = range.first; iter != range.second; ++iter) {
-            positions.push_back({iter->second, i});
-          }
-        }
-        return positions.size();
-      }));
-    }
-    // merge results
-    size_t pcnt = 0;
-    for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
-      pcnt += x.get();
-      // log_print("subtasks probe get {} results\n", pcnt);
-    });
-    resultSize = pcnt;
-    for (int i = 0; i < tmpResults.size(); i++) {
-      tmpResults[i].reserve(resultSize);
-    }
-    std::vector<std::future<void>> mvf;
-    uint64_t merge_position = 0;
-    for (auto &positions: parallelPositions) {
-      mvf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions, merge_position]() {
-        uint64_t index = merge_position;
-        for (auto &pos: positions) {
-          unsigned relColId=0;
-          for (unsigned cId=0;cId<copyLeftData.size();++cId)
-            tmpResults[relColId++][index] = copyLeftData[cId][pos[0]];
-          for (unsigned cId=0;cId<copyRightData.size();++cId)
-            tmpResults[relColId++][index] = copyRightData[cId][pos[1]];
-          index ++;
-        }
-      }));
-      merge_position += positions.size();
-    }
-    for_each(mvf.begin(), mvf.end(), [](future<void> &x) {
-      x.wait();
-    });
-#else
-    for (uint64_t i=0,limit=i+right->resultSize;i!=limit;++i) {
-      auto rightKey=rightKeyColumn[i];
-      auto range=hashTable.equal_range(rightKey);
-      for (auto iter=range.first;iter!=range.second;++iter) {
-        copy2Result(iter->second,i);
-      }
-    }
-#endif
-#if PRINT_LOG
-    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-    log_print("probe phase time {} ms\n", end.count() - tmpms.count());
-#endif
-  }
-} else {
-  // If left resultSize == 1, no not need to build hash table
-  if (leftResultSize == 1) {
-    auto leftKey = leftKeyColumn[0];
-    if (rightResultSize > (MIN_PROBE_ITEM_CNT << 1)) {
-      uint32_t task_cnt = 8;
-      size_t step = (rightResultSize + task_cnt - 1) / task_cnt;
-      size_t start = 0;
-      int taskid = 0;
-      std::vector<std::vector<uint64_t>> parallelSums(task_cnt, std::vector<uint64_t>(tmpResults.size(), 0));
-      std::vector<std::future<void>> vf;
-      while (start < rightResultSize) {
-        if (start + step >= rightResultSize) {
-          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &sum = parallelSums[taskid], leftKey, rightKeyColumn, start, end = rightResultSize]() {
-            for (uint64_t i = start; i < end; i++) {
-              if (leftKey == rightKeyColumn[i]) {
-                copy2ResultToSum(sum, 0, i);
-              }
-            }
-          }));
-          break;
-        }
-        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &sum = parallelSums[taskid], leftKey, rightKeyColumn, start, end = start + step]() {
-          for (uint64_t i = start; i < end; i++) {
-            if (leftKey == rightKeyColumn[i]) {
-              copy2ResultToSum(sum, 0, i);
-            }
-          }
-        }));
-        start += step;
-        taskid ++;
-      }
-      resultSize = 1;
-      for (int i = 0; i < tmpResults.size(); i++) {
-        tmpResults[i].push_back(0);
-      }
-      for_each(vf.begin(), vf.end(), [](future<void> &x) {
-        x.wait();
-      });
-      for (int ii = 0; ii < parallelSums.size(); ii++) {
-        for (int i = 0; i < tmpResults.size(); i++) {
-          tmpResults[i][0] += parallelSums[ii][i];
-        }
-      }
-    } else {
-      std::vector<uint64_t> sum(tmpResults.size(), 0);
-      for (uint64_t i=0; i< rightResultSize; ++i) {
-        if (leftKey == rightKeyColumn[i]) {
-          copy2ResultToSum(sum, 0, i);
-        }
-      }
-      resultSize = 1;
-      for (int i = 0; i < tmpResults.size(); i++) {
-        tmpResults[i].push_back(sum[i]);
-      }
-    }
-
-#if PRINT_LOG
-    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-    log_print("left resultSize == 1, join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
-#endif
-
-    return;
+    hashTableIndices.resize(partitionCnt, NULL);
   }
 
-  // Build phase
-#if PRINT_LOG
-  tmpms = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-#endif
-  uint32_t build_cnt = 1;
-#if USE_PARALLEL_BUILD_HASH_TABLE
-  if (leftResultSize > (MIN_BUILD_ITEM_CNT << 1)) {
-    build_cnt = std::min((uint32_t)(leftResultSize / MIN_BUILD_ITEM_CNT), MAX_BUILD_TASK_CNT);
-    hashTables.resize(build_cnt);
-    size_t bstep = (leftResultSize + build_cnt - 1) / build_cnt;
-    size_t bstart = bstep;
-    int buildid = 0;
-    std::vector<std::future<void>> bvf;
-    while (bstart < leftResultSize) {
-      buildid ++;
-      if (bstart + bstep >= leftResultSize) {
-        bvf.push_back(std::async(std::launch::async | std::launch::deferred , [&hashTable = hashTables[buildid], leftKeyColumn, bstart, bend = leftResultSize]() {
-          hashTable.reserve((bend - bstart) * 2);
-          for (uint32_t i = bstart; i < bend; i++) {
-            hashTable.emplace(leftKeyColumn[i], i);
-          }
-        }));
-        break;
-      }
-      bvf.push_back(std::async(std::launch::async | std::launch::deferred , [&hashTable = hashTables[buildid], leftKeyColumn, bstart, bend = bstart + bstep]() {
-        hashTable.reserve((bend - bstart) * 2);
-        for (uint32_t i = bstart; i < bend; i++) {
-          hashTable.emplace(leftKeyColumn[i], i);
-        }
-      }));
-      bstart += bstep;
-    }
-    hashTables[0].reserve(bstep * 2);
-    for (uint32_t i = 0; i < bstep; i++) {
-      hashTables[0].emplace(leftKeyColumn[i], i);
-    }
-    for_each(bvf.begin(), bvf.end(), [](future<void> &x) { x.wait(); });
-  } else {
-    hashTables.resize(1);
-    hashTables[0].reserve(leftResultSize * 2);
-    for (uint32_t i = 0; i < leftResultSize; i++) {
-      hashTables[0].emplace(leftKeyColumn[i], i);
-    }
+  // Do build and probe for each bucket
+  vf.clear();
+  for (auto idx: subJoins) {
+    vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, idx]() {
+      this->buildAndProbe(idx);
+    }));
   }
-#else
-  hashTable.reserve(left->resultSize*2);
-  for (uint64_t i=0,limit=i+left->resultSize;i!=limit;++i) {
-    hashTable.emplace(leftKeyColumn[i],i);
+  for_each(vf.begin(), vf.end(), [](future<void> &x) {
+    x.wait();
+  });
+
+  for (unsigned cId=0;cId<requestedColumns.size();++cId) {
+    results[cId].fix();
   }
-#endif
-#if PRINT_LOG
-  end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-  log_print("Left result size: {} build hashmap time {} ms\n", leftResultSize, end.count() - tmpms.count());
-  tmpms = end;
-#endif
-  // Probe phase
-#if PRINT_LOG
-  log_print("right result size: {}, is range: false\n", rightResultSize);
-#endif
-
-  if (rightResultSize > (MIN_PROBE_ITEM_CNT << 1)) {
-    uint32_t task_cnt = rightResultSize / MIN_PROBE_ITEM_CNT;
-    task_cnt = std::min(task_cnt, 32U);
-    size_t step = (rightResultSize + task_cnt - 1) / task_cnt;
-    size_t start = 0;
-    int taskid = 0;
-    std::vector<std::vector<uint64_t>> parallelSums(task_cnt, std::vector<uint64_t>(tmpResults.size(), 0));
-    std::vector<std::future<void>> vf;
-#if USE_PARALLEL_BUILD_HASH_TABLE
-    while (start < rightResultSize) {
-      if (start + step >= rightResultSize) {
-          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &sum = parallelSums[taskid], build_cnt, rightKeyColumn, start, end = rightResultSize]() {
-            for (uint32_t ii = 0; ii < build_cnt; ii++) {
-              auto &hashTable = hashTables[ii];
-              for (uint64_t i = start; i < end; i++) {
-                auto rightKey = rightKeyColumn[i];
-                auto range = hashTable.equal_range(rightKey);
-                for (auto iter = range.first; iter != range.second; ++iter) {
-                  copy2ResultToSum(sum, iter->second, i);
-                }
-              }
-            }
-          }));
-        break;
-      }
-      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &sum = parallelSums[taskid], build_cnt, rightKeyColumn, start, end = start + step]() {
-        for (uint32_t ii = 0; ii < build_cnt; ii++) {
-          auto &hashTable = hashTables[ii];
-          for (uint32_t i = start; i < end; i++) {
-            auto rightKey = rightKeyColumn[i];
-            auto range = hashTable.equal_range(rightKey);
-            for (auto iter = range.first; iter != range.second; ++iter) {
-              copy2ResultToSum(sum, iter->second, i);
-            }
-          }
-        }
-      }));
-      start += step;
-      taskid ++;
-    }
-#else // USE_PARALLEL_BUILD_HASH_TABLE
-    while (start < rightResultSize) {
-      taskid ++;
-      if (start + step >= rightResultSize) {
-        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &sum = parallelSums[taskid], rightKeyColumn, start, end = rightResultSize]() {
-          for (uint32_t i = start; i < end; i++) {
-            auto rightKey = rightKeyColumn[i];
-            auto range = hashTable.equal_range(rightKey);
-            for (auto iter = range.first; iter != range.second; ++iter) {
-              copy2ResultToSum(sum, iter->second, i);
-            }
-          }
-        }));
-        break;
-      }
-      vf.push_back(std::async(std::launch::async | std::launch::deferred , [this, &sum = parallelSums[taskid], rightKeyColumn, start, end = start + step]() {
-        for (uint32_t i = start; i < end; i++) {
-          auto rightKey = rightKeyColumn[i];
-          auto range = hashTable.equal_range(rightKey);
-          for (auto iter = range.first; iter != range.second; ++iter) {
-            copy2ResultToSum(sum, iter->second, i);
-          }
-        }
-      }));
-      start += step;
-    }
-    for (uint32_t i = 0; i < step; i++) {
-      auto rightKey = rightKeyColumn[i];
-      auto range = hashTable.equal_range(rightKey);
-      for (auto iter = range.first; iter != range.second; ++iter) {
-        copy2ResultToSum(parallelSums[0], iter->second, i);
-      }
-    }
-#endif
-    // wait for the results
-    for_each(vf.begin(), vf.end(), [](future<void> &x) {
-      x.wait();
-    });
-
-    // merge the results
-    for (int i = 1; i < parallelSums.size(); i++) {
-      for (int j = 0; j < parallelSums[0].size(); j++) {
-        parallelSums[0][j] += parallelSums[i][j];
-      }
-    }
-    resultSize = 1;
-    for (int i = 0; i < tmpResults.size(); i++) {
-      tmpResults[i].push_back(parallelSums[0][i]);
-    }
-  } else {    // MIN_PROBE_ITEM_CNT
-#if USE_PARALLEL_BUILD_HASH_TABLE
-    std::vector<std::vector<uint64_t>> parallelSums(build_cnt, std::vector<uint64_t>(tmpResults.size(), 0));
-    std::vector<std::future<void>> vf;
-    for (uint32_t ii = 1; ii < build_cnt; ii++) {
-      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &hashTable = hashTables[ii], &sum = parallelSums[ii], rightKeyColumn, start = 0, end = rightResultSize]() {
-        for (uint32_t i = start; i < end; i++) {
-          auto rightKey = rightKeyColumn[i];
-          auto range = hashTable.equal_range(rightKey);
-          for (auto iter = range.first; iter != range.second; ++iter) {
-            copy2ResultToSum(sum, iter->second, i);
-          }
-        }
-      }));
-    }
-    for (uint32_t i = 0; i < rightResultSize; i++) {
-      auto rightKey = rightKeyColumn[i];
-      auto range = hashTables[0].equal_range(rightKey);
-      for (auto iter = range.first; iter != range.second; ++iter) {
-        copy2ResultToSum(parallelSums[0], iter->second, i);
-      }
-    }
-    // merge results
-    for_each(vf.begin(), vf.end(), [](future<void> &x) {
-      x.wait();
-    });
-    resultSize = 1;
-    for (int i = 1; i < parallelSums.size(); i++) {
-      for (int j = 0; j < parallelSums[0].size(); j++) {
-        parallelSums[0][j] += parallelSums[i][j];
-      }
-    }
-    for (int i = 0; i < tmpResults.size(); i++) {
-      tmpResults[i].push_back(parallelSums[0][i]);
-    }
-#else
-    std::vector<uint64_t> sum(tmpResults.size(), 0);
-    for (uint64_t i=0,limit=i+right->resultSize;i!=limit;++i) {
-      auto rightKey=rightKeyColumn[i];
-      auto range=hashTable.equal_range(rightKey);
-      for (auto iter=range.first;iter!=range.second;++iter) {
-        copy2ResultToSum(sum, iter->second, i);
-      }
-    }
-
-    resultSize = 1;
-    for (int i = 0; i < tmpResults.size(); i++) {
-      // log_print("{}: {}\n", i, sum[i]);
-      tmpResults[i].push_back(sum[i]);
-    }
-#endif
-#if PRINT_LOG
-    end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-    log_print("probe phase time {} ms\n", end.count() - tmpms.count());
-#endif
+  if (counted) {
+    results[requestedColumns.size()].fix();
   }
-}
+
 #if PRINT_LOG
   end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
   log_print("join resultSize: {}, run time {} ms\n", resultSize, end.count() - start.count());
 #endif
 }
 //---------------------------------------------------------------------------
-void SelfJoin::copy2Result(uint64_t id)
-  // Copy to result
+void Join::partitionLeft()
+  // Partition Left
 {
-  for (unsigned cId=0;cId<copyData.size();++cId)
-    tmpResults[cId].push_back(copyData[cId][id]);
-  ++resultSize;
-}
+  uint64_t start = 0;
+  uint64_t remain = taskRemain[0];
+  auto task_cnt = taskCnt[0];
+  std::vector<std::future<void>> vf;
+  for (unsigned i = 0; i < task_cnt; i++) {
+    uint64_t len = taskLength[0];
+    if (remain) {
+      len ++;
+      remain --;
+    }
+    vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, taskid = i, start, end = start + len]() {
+      auto &inputData = left->getResults();
+      auto &keyColumn = inputData[colId[0]];
+      histograms[0][taskid].resize(partitionCnt);
+      auto it = keyColumn.begin(start);
+      for (uint64_t i = start; i < end; i++, ++it) {
+        // cerr << "value: " << *it << ", bucket: " << RADIX_HASH(*it, partitionCnt) << endl;
+        histograms[0][taskid][RADIX_HASH(*it, partitionCnt)]++;
+      }
+    }));
+    start += len;
+  }
+  // wait the statistics
+  for_each(vf.begin(), vf.end(), [](future<void> &x) {
+    x.wait();
+  });
 
-void SelfJoin::copy2ResultToSum(std::vector<uint64_t> &sum, uint64_t id)
-{
-  for (unsigned cId=0;cId<copyData.size();++cId)
-    sum[cId] += copyData[cId][id];
+  for (int i = 0; i < partitionCnt; i++) {
+    partitionLength[0].push_back(0);
+    for (int j = 0; j < task_cnt; j++) {
+      partitionLength[0][i] += histograms[0][j][i];
+      if (j != 0) { // accumulate the counts
+        histograms[0][j][i] += histograms[0][j-1][i];
+      }
+    }
+  }
+
+  // split the partition
+  auto columnCnt = left->getResults().size();
+  uint64_t* partAddress = partitionTable[0].data();
+  for (uint64_t i = 0; i < partitionCnt; i++) {
+    uint64_t tupleCnt = partitionLength[0][i];
+    // cerr << "tuple cnt: " << tupleCnt << endl;
+    for (unsigned j = 0; j < columnCnt; j++) {
+      partition[0][i][j] = partAddress + j * tupleCnt;
+    }
+    partAddress += columnCnt * tupleCnt;
+  }
+  // put the data to its bucket
+  vf.clear();
+  start = 0;
+  remain = taskRemain[0];
+  for (unsigned i = 0; i < task_cnt; i++) {
+    uint64_t len = taskLength[0];
+    if (remain) {
+      len ++;
+      remain --;
+    }
+    vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, taskid = i, start, end = start + len]() {
+      auto &inputData = left->getResults();
+      auto &keyColumn = inputData[colId[0]];
+      auto it = keyColumn.begin(start);
+      vector<Column<uint64_t>::Iterator> colIt;
+      vector<uint64_t> insertOffs(partitionCnt, 0);
+      for (unsigned i = 0; i < inputData.size(); i++) {
+        colIt.push_back(inputData[i].begin(start));
+      }
+
+      for (uint64_t i = start; i < end; i++, ++it) {
+        uint64_t hashResult = RADIX_HASH(*it, partitionCnt);
+        uint64_t insertBase;
+        uint64_t insertOff = insertOffs[hashResult]++;
+        if (UNLIKELY(taskid == 0))
+          insertBase = 0;
+        else
+          insertBase = histograms[0][taskid - 1][hashResult];
+
+        for (unsigned j = 0; j < inputData.size(); j++) {
+          partition[0][hashResult][j][insertBase + insertOff] = *(colIt[j]);
+          ++(colIt[j]);
+        }
+      }
+    }));
+    start += len;
+  }
+  for_each(vf.begin(), vf.end(), [](future<void> &x) {
+    x.wait();
+  });
 }
 //---------------------------------------------------------------------------
-bool SelfJoin::require(SelectInfo info)
+void Join::partitionRight()
+  // Partition Right
+{
+  uint64_t start = 0;
+  uint64_t remain = taskRemain[1];
+  auto task_cnt = taskCnt[1];
+  std::vector<std::future<void>> vf;
+  for (unsigned i = 0; i < task_cnt; i++) {
+    uint64_t len = taskLength[1];
+    if (remain) {
+      len ++;
+      remain --;
+    }
+    vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, taskid = i, start, end = start + len]() {
+      auto &inputData = right->getResults();
+      auto &keyColumn = inputData[colId[1]];
+      histograms[1][taskid].resize(partitionCnt);
+      auto it = keyColumn.begin(start);
+      for (uint64_t i = start; i < end; i++, ++it) {
+        histograms[1][taskid][RADIX_HASH(*it, partitionCnt)]++;
+      }
+    }));
+    start += len;
+  }
+  // wait the statistics
+  for_each(vf.begin(), vf.end(), [](future<void> &x) {
+    x.wait();
+  });
+
+  for (int i = 0; i < partitionCnt; i++) {
+    partitionLength[1].push_back(0);
+    for (int j = 0; j < task_cnt; j++) {
+      partitionLength[1][i] += histograms[1][j][i];
+      if (j != 0) { // accumulate the counts
+        histograms[1][j][i] += histograms[1][j-1][i];
+      }
+    }
+  }
+
+  resultIndex.push_back(0);
+  for (int i = 0; i < partitionCnt; i++) {
+    uint64_t limitRight = partitionLength[1][i];
+    uint32_t probe_cnt = std::min((uint32_t)(limitRight / MIN_PARTITION_TABLE_SIZE), MAX_TASK_CNT);
+    if (probe_cnt == 0) probe_cnt = 1;
+    uint64_t probe_len = limitRight / probe_cnt;
+    uint64_t probe_remain = limitRight % probe_cnt;
+    probingCnt.push_back(probe_cnt);
+    probingLength.push_back(probe_len);
+    ProbingRemain.push_back(probe_remain);
+    resultIndex.push_back(resultIndex.back() + probe_cnt);
+  }
+  unsigned probingResultCnt = resultIndex[partitionCnt];
+  for (int i = 0; i < requestedColumns.size(); i++) {
+    results.emplace_back(probingResultCnt);
+  }
+  if (counted) {
+    results.emplace_back(probingResultCnt);
+  }
+
+  // split the partition
+  auto columnCnt = right->getResults().size();
+  uint64_t* partAddress = partitionTable[1].data();
+  for (uint64_t i = 0; i < partitionCnt; i++) {
+    uint64_t tupleCnt = partitionLength[1][i];
+    for (unsigned j = 0; j < columnCnt; j++) {
+      partition[1][i][j] = partAddress + j * tupleCnt;
+    }
+    partAddress += columnCnt * tupleCnt;
+  }
+  vf.clear();
+  start = 0;
+  remain = taskRemain[1];
+  for (unsigned i = 0; i < task_cnt; i++) {
+    uint64_t len = taskLength[1];
+    if (remain) {
+      len ++;
+      remain --;
+    }
+    vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, taskid = i, start, end = start + len]() {
+      auto &inputData = right->getResults();
+      auto &keyColumn = inputData[colId[1]];
+      auto it = keyColumn.begin(start);
+      vector<Column<uint64_t>::Iterator> colIt;
+      vector<uint64_t> insertOffs(partitionCnt, 0);
+      for (unsigned i = 0; i < inputData.size(); i++) {
+        colIt.push_back(inputData[i].begin(start));
+      }
+
+      for (uint64_t i = start; i < end; i++, ++it) {
+        uint64_t hashResult = RADIX_HASH(*it, partitionCnt);
+        uint64_t insertBase;
+        uint64_t insertOff = insertOffs[hashResult]++;
+        if (UNLIKELY(taskid == 0))
+          insertBase = 0;
+        else
+          insertBase = histograms[1][taskid - 1][hashResult];
+
+        for (unsigned j = 0; j < inputData.size(); j++) {
+          partition[1][hashResult][j][insertBase + insertOff] = *(colIt[j]);
+          ++(colIt[j]);
+        }
+      }
+    }));
+    start += len;
+  }
+  for_each(vf.begin(), vf.end(), [](future<void> &x) {
+    x.wait();
+  });
+}
+//---------------------------------------------------------------------------
+void Join::buildAndProbe(unsigned bucket)
+  // Build and probe for bucket
+{
+  auto &leftPart = partition[0][bucket];
+  auto leftPartLen = partitionLength[0][bucket];
+  auto &rightPart = partition[1][bucket];
+  auto rightPartLen = partitionLength[1][bucket];
+  if (leftPartLen > HASH_THRESHOLD) {
+    uint64_t *leftKeyColumn = leftPart[colId[0]];
+    if (cntBuilding) {
+      hashTableCnts[bucket] = new unordered_map<uint64_t, uint64_t>();
+      auto hashTable = hashTableCnts[bucket];
+      hashTable->reserve(leftPartLen * 2);
+      for (uint64_t i = 0; i < leftPartLen; i++) {
+        if (left->counted) {
+          (*hashTable)[leftKeyColumn[i]] += leftPart[1][i];
+        } else {
+          (*hashTable)[leftKeyColumn[i]] ++;
+        }
+      }
+    } else {
+      hashTableIndices[bucket] = new HT();
+      auto hashTable = hashTableIndices[bucket];
+      hashTable->reserve(leftPartLen * 2);
+      for (uint64_t i = 0; i < leftPartLen; i++) {
+        hashTable->emplace(std::make_pair(leftKeyColumn[i], i));
+      }
+    }
+  }
+
+  unsigned task_cnt = probingCnt[bucket];
+  uint64_t len = probingLength[bucket];
+  unsigned remain = ProbingRemain[bucket];
+  tmpResults[bucket].resize(task_cnt);
+  std::vector<std::future<size_t>> vf;
+  uint64_t start = 0;
+  for (int i = 0; i < task_cnt; i++) {
+    uint64_t step = len;
+    if (remain) {
+      step ++;
+      remain --;
+    }
+    vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, bucket, probeid = i, &leftPart, leftPartLen, &rightPart, rightPartLen, start, end = start + step]() -> size_t {
+      uint64_t *leftKeyColumn = leftPart[colId[0]];
+      uint64_t *rightKeyColumn = rightPart[colId[1]];
+      vector<uint64_t*> copyLeftData, copyRightData;
+      vector<vector<uint64_t>> &localResults = tmpResults[bucket][probeid];
+      unsigned leftColSize = requestedColumnsLeft.size();
+      unsigned rightColSize = requestedColumnsRight.size();
+      unsigned resultColSize = requestedColumns.size();
+      unordered_map<uint64_t, uint64_t>* hashTableC = NULL;
+      unordered_multimap<uint64_t, uint64_t>* hashTable = NULL;
+
+      if (cntBuilding) {
+        hashTableC = this->hashTableCnts[bucket];
+      } else {
+        hashTable = this->hashTableIndices[bucket];
+      }
+
+      for (unsigned j = 0; j < requestedColumns.size(); j++) {
+        localResults.emplace_back();
+      }
+      if (counted) {
+        localResults.emplace_back();
+      }
+
+      for (auto &info: requestedColumnsLeft) {
+        copyLeftData.push_back(leftPart[left->resolve(info)]);
+      }
+      if (left->counted) {
+        copyLeftData.push_back(leftPart.back());
+      }
+
+      for (auto &info: requestedColumnsRight) {
+        copyRightData.push_back(rightPart[right->resolve(info)]);
+      }
+      if (right->counted) {
+        copyRightData.push_back(rightPart.back());
+      }
+
+      if (leftPartLen > HASH_THRESHOLD) {
+        if (cntBuilding) {
+          for (uint64_t i = start; i < end; i++) {
+            auto rightKey = rightKeyColumn[i];
+            if (hashTableC->find(rightKey) == hashTableC->end())
+              continue;
+            uint64_t leftCnt = hashTableC->at(rightKey);
+            uint64_t rightCnt = right->counted ? copyRightData.back()[i] : 1;
+            if (counted == 1) {
+              auto data = (leftColSize == 1) ? rightKey : copyRightData[0][i];
+              localResults[0].push_back(data);
+              localResults[1].push_back(leftCnt * rightCnt);
+            } else {
+              unsigned relColId = 0;
+              for (unsigned cId=0;cId<leftColSize;++cId) // if exist
+                localResults[relColId++].push_back(rightKey);
+              for (unsigned cId=0;cId<rightColSize;++cId)
+                localResults[relColId++].push_back(copyRightData[cId][i]);
+              if (counted){
+                localResults[relColId].push_back(leftCnt * rightCnt);
+              }
+            }
+          }
+        } else {
+          for (uint64_t i = start; i < end; i++) {
+            auto rightKey=rightKeyColumn[i];
+            auto range=hashTable->equal_range(rightKey);
+            for (auto iter=range.first;iter!=range.second;++iter) {
+              unsigned relColId=0;
+              for (unsigned cId=0;cId<leftColSize;++cId)
+                localResults[relColId++].push_back(copyLeftData[cId][iter->second]);
+              for (unsigned cId=0;cId<rightColSize;++cId)
+                localResults[relColId++].push_back(copyRightData[cId][i]);
+              if (counted){
+                uint64_t leftCnt = left->counted ? copyLeftData[leftColSize][iter->second] : 1;
+                uint64_t rightCnt = right->counted ? copyRightData[rightColSize][i] : 1;
+                localResults[relColId].push_back(leftCnt * rightCnt);
+              }
+            }
+          }
+        }
+      } else {  // nested loop join
+        for (uint64_t i = 0; i < leftPartLen; i++) {
+          for (uint64_t j = start; j < end; j++) {
+            if (leftKeyColumn[i] == rightKeyColumn[j]) {
+              unsigned relColId=0;
+              for (unsigned cId=0;cId<leftColSize;++cId)
+                localResults[relColId++].push_back(copyLeftData[cId][i]);
+              for (unsigned cId=0;cId<rightColSize;++cId)
+                localResults[relColId++].push_back(copyRightData[cId][j]);
+              if (counted){
+                uint64_t leftCnt = left->counted ? copyLeftData[leftColSize][i] : 1;
+                uint64_t rightCnt= right->counted ? copyRightData[rightColSize][j] : 1;
+                localResults[relColId].push_back(leftCnt * rightCnt);
+              }
+            }
+          }
+        }
+      }
+      if (localResults[0].size() == 0) {
+        return 0;
+      }
+      for (unsigned i = 0; i < resultColSize; i++) {
+        results[i].addTuples(resultIndex[bucket] + probeid, localResults[i].data(), localResults[i].size());
+      }
+      if (counted) {
+        results[resultColSize].addTuples(resultIndex[bucket] + probeid, localResults[resultColSize].data(), localResults[resultColSize].size());
+      }
+      return localResults[0].size();
+    }));
+    start += step;
+  }
+  size_t pcnt = 0;
+  for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+    pcnt += x.get();
+  });
+  __sync_fetch_and_add(&resultSize, pcnt);
+  // cerr << "join result size: " << resultSize << endl;
+}
+//---------------------------------------------------------------------------
+bool SelfJoin::require(SelectInfo &info)
   // Require a column and add it to results
 {
   if (requiredIUs.count(info))
     return true;
   if(input->require(info)) {
-    tmpResults.emplace_back();
     requiredIUs.emplace(info);
     return true;
   }
@@ -963,137 +783,107 @@ void SelfJoin::run()
   input->require(pInfo.left);
   input->require(pInfo.right);
   input->run();
-  inputData=input->getResults();
+  auto &inputData = input->getResults();
+  if (input->resultSize == 0) {
+    return;
+  }
+  auto inputResultSize = input->resultSize;
+  uint32_t task_cnt = std::min((uint32_t)(inputResultSize / MIN_PROBE_ITEM_CNT), MAX_BUILD_TASK_CNT);
+  if (task_cnt == 0) task_cnt = 1;
+  uint32_t step = inputResultSize / task_cnt;
+  uint32_t remain = inputResultSize % task_cnt;
 
   for (auto& iu : requiredIUs) {
     auto id=input->resolve(iu);
-    copyData.emplace_back(inputData[id]);
+    copyData.emplace_back(&inputData[id]);
     select2ResultColId.emplace(iu,copyData.size()-1);
+    results.emplace_back(task_cnt);
   }
 
-  auto leftColId=input->resolve(pInfo.left);
-  auto rightColId=input->resolve(pInfo.right);
+  if (input->counted){
+    if (!counted){
+      counted = 2;
+    }
+    copyData.emplace_back(&inputData.back());
+  }
+  if (counted){
+    results.emplace_back(task_cnt);
+  }
 
-  auto leftCol=inputData[leftColId];
-  auto rightCol=inputData[rightColId];
-  auto inputResultSize = input->resultSize;
-  if (isParentSum()) {
-    if (inputResultSize > (MIN_PROBE_ITEM_CNT << 1)) {
-      uint32_t task_cnt = 8;
-      size_t step = (inputResultSize + task_cnt - 1) / task_cnt;
-      size_t start = 0;
-      int taskid = 0;
-      std::vector<std::vector<uint64_t>> parallelSums(task_cnt, std::vector<uint64_t>(tmpResults.size(), 0));
-      std::vector<std::future<void>> vf;
-      while (start < inputResultSize) {
-        if (start + step >= inputResultSize) {
-          vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &sum = parallelSums[taskid], leftCol, rightCol, start, end = inputResultSize]() {
-            for (uint64_t i = start; i < end; i++) {
-              if (leftCol[i] == rightCol[i]) {
-                copy2ResultToSum(sum, i);
-              }
-            }
-          }));
-          break;
-        }
-        vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &sum = parallelSums[taskid], leftCol, rightCol, start, end = start + step]() {
-          for (uint64_t i = start; i < end; i++) {
-            if (leftCol[i] == rightCol[i]) {
-              copy2ResultToSum(sum, i);
-            }
-          }
-        }));
-        start += step;
-        taskid ++;
-      }
-      resultSize = 1;
-      for (int i = 0; i < tmpResults.size(); i++) {
-        tmpResults[i].push_back(0);
-      }
-      for_each(vf.begin(), vf.end(), [](future<void> &x) {
-        x.wait();
-      });
-      for (int ii = 0; ii < parallelSums.size(); ii++) {
-        for (int i = 0; i < tmpResults.size(); i++) {
-          tmpResults[i][0] += parallelSums[ii][i];
-        }
-      }
-    } else {
-      std::vector<uint64_t> sum(tmpResults.size(), 0);
-      for (uint64_t i=0;i<input->resultSize;++i) {
-        if (leftCol[i]==rightCol[i])
-          copy2ResultToSum(sum, i);
-      }
-      resultSize = 1;
-      for (int i = 0; i < tmpResults.size(); i++) {
-        tmpResults[i].push_back(sum[i]);
-      }
+  tmpResults.resize(task_cnt);
+  std::vector<std::future<size_t>> vf;
+  uint64_t start = 0;
+  for (int i = 0; i < task_cnt; i++) {
+    uint64_t len = step;
+    if (remain) {
+      len ++;
+      remain --;
     }
-  } else {
-    if (inputResultSize > (MIN_PROBE_ITEM_CNT << 1)) {
-      uint32_t task_cnt = inputResultSize / MIN_PROBE_ITEM_CNT;
-      task_cnt = std::min(task_cnt, 32U);
-      size_t step = (inputResultSize + task_cnt - 1) / task_cnt;
-      size_t start = 0;
-      int taskid = 0;
-      std::vector<std::vector<uint64_t>> parallelPositions(task_cnt);
-      std::vector<std::future<size_t>> vf;
-      while (start < inputResultSize) {
-        if (start + step >= inputResultSize) {
-          vf.push_back(std::async(std::launch::async | std::launch::deferred, [&positions = parallelPositions[taskid], leftCol, rightCol, start, end = inputResultSize]() {
-            positions.reserve(end - start);
-            for (uint64_t i = start; i < end; i++) {
-              if (leftCol[i] == rightCol[i]) {
-                positions.push_back(i);
-              }
+    vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, taskid = i, start, end = start + len]() {
+      auto& inputData=input->getResults();
+      vector<vector<uint64_t>>& localResults = tmpResults[taskid];
+      auto leftColId=input->resolve(pInfo.left);
+      auto rightColId=input->resolve(pInfo.right);
+
+      auto leftColIt=inputData[leftColId].begin(start);;
+      auto rightColIt=inputData[rightColId].begin(start);;
+
+      vector<Column<uint64_t>::Iterator> colIt;
+      unsigned colSize = copyData.size();
+      for (int j=0; j<colSize; j++) {
+        localResults.emplace_back();
+      }
+      if (counted && !input->counted){
+          localResults.emplace_back();
+      }
+      for (unsigned i=0; i<colSize; i++) {
+        colIt.push_back(copyData[i]->begin(start));
+      }
+      std::unordered_map<uint64_t, uint64_t> cntMap;
+      for (uint64_t i = start; i < end; i++) {
+        if (*leftColIt==*rightColIt) {
+          if (counted == 1) {
+            auto dup = cntMap.find(*(colIt[0]));
+            uint64_t dupCnt = (input->counted) ? *(colIt[1]) : 1;
+            if (dup != cntMap.end()){
+              localResults[1][dup->second] += dupCnt;
+            } else {
+              localResults[0].push_back(*(colIt[0]));
+              localResults[1].push_back(dupCnt);
+              cntMap.insert(dup, pair<uint64_t, uint64_t>(*(colIt[0]), localResults[1].size()-1));
             }
-            return positions.size();
-          }));
-          break;
+          } else {
+            for (unsigned cId=0;cId<colSize;++cId) {
+              localResults[cId].push_back(*(colIt[cId]));
+            }
+          }
         }
-        vf.push_back(std::async(std::launch::async | std::launch::deferred, [&positions = parallelPositions[taskid], leftCol, rightCol, start, end = start + step]() {
-          positions.reserve(end - start);
-          for (uint64_t i = start; i < end; i++) {
-            if (leftCol[i] == rightCol[i]) {
-              positions.push_back(i);
-            }
-          }
-          return positions.size();
-        }));
-        start += step;
-        taskid++;
+        ++leftColIt;
+        ++rightColIt;
+        for (unsigned i=0; i<colSize; i++) {
+          ++colIt[i];
+        }
       }
-      size_t pcnt = 0;
-      for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
-        pcnt += x.get();
-      });
-      resultSize = pcnt;
-      for (int i = 0; i < tmpResults.size(); i++) {
-        tmpResults[i].reserve(resultSize);
+      for (int i=0; i<colSize; i++) {
+        results[i].addTuples(taskid, localResults[i].data(), localResults[i].size());
       }
-      uint64_t merge_position = 0;
-      std::vector<std::future<void>> mvf;
-      for (int ii = 0; ii < parallelPositions.size(); ii++) {
-        mvf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &positions = parallelPositions[ii], merge_position]() {
-          uint64_t index = merge_position;
-          for (auto &pos: positions) {
-            unsigned relColId=0;
-            for (unsigned cId=0;cId<copyData.size();++cId)
-            tmpResults[cId].push_back(copyData[cId][pos]);
-            index ++;
-          }
-        }));
-        merge_position += parallelPositions[ii].size();
+      if (counted && !input->counted){
+        results[colSize].addTuples(taskid, localResults[colSize].data(), localResults[colSize].size());
       }
-      for_each(mvf.begin(), mvf.end(), [](future<void> &x) {
-        x.wait();
-      });
-    } else {
-      for (uint64_t i=0;i<input->resultSize;++i) {
-        if (leftCol[i]==rightCol[i])
-          copy2Result(i);
-      }
-    }
+      return localResults[0].size();
+    }));
+    start += len;
+  }
+  size_t pcnt = 0;
+  for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+    pcnt += x.get();
+  });
+  resultSize = pcnt;
+  for (unsigned cId=0;cId<copyData.size();++cId) {
+    results[cId].fix();
+  }
+  if (counted && !input->counted) {
+    results[copyData.size()].fix();
   }
 }
 //---------------------------------------------------------------------------
@@ -1104,36 +894,51 @@ void Checksum::run()
     input->require(sInfo);
   }
   input->run();
-  auto results=input->getResults();
-  for (auto& sInfo : colInfo) {
-    auto colId = input->resolve(sInfo);
-    // log_print("checksum: {}, {}\n", colId, results[colId][0]);
-    checkSums.push_back(results[colId][0]);
+  checkSums.resize(colInfo.size(), 0);
+  // cerr << "checksum resultSize: " << input->resultSize << endl;
+
+  if (input->resultSize == 0) {
+    return;
+  }
+  uint64_t task_cnt = std::min((uint32_t)(input->resultSize / MIN_PROBE_ITEM_CNT), MAX_TASK_CNT);
+  if (task_cnt == 0) task_cnt = 1;
+  uint64_t step = input->resultSize / task_cnt;
+  uint64_t remain = input->resultSize % task_cnt;
+
+  uint64_t start = 0;
+  std::vector<std::future<void>> vf;
+  for (int i = 0; i < task_cnt; i++) {
+    uint64_t len = step;
+    if (remain) {
+      remain --;
+      len ++;
+    }
+    vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, start, end = start + len]() {
+      auto& inputData=input->getResults();
+      int sumIndex = 0;
+      for (auto &sInfo: colInfo) {
+        auto colId = input->resolve(sInfo);
+        auto inputColIt = inputData[colId].begin(start);
+        uint64_t sum = 0;
+        // cerr << input->counted << endl;
+        if (input->counted) {
+          auto countColIt = inputData.back().begin(start);
+          for (int i = start; i < end; i++, ++inputColIt, ++countColIt) {
+            sum += (*inputColIt) * (*countColIt);
+          }
+        } else {
+          for (int i=start; i < end; i++,++inputColIt){
+            sum += (*inputColIt);
+          }
+        }
+        __sync_fetch_and_add(&checkSums[sumIndex++], sum);
+      }
+    }));
+    start += len;
   }
 
-  // std::vector<std::future<void>> vf;
-  // for (auto& sInfo : colInfo) {
-  //   if (sumsCache.find(sInfo) != sumsCache.end()) {
-  //     continue;
-  //   }
-  //   auto colId=input->resolve(sInfo);
-  //   auto resultCol=results[colId];
-  //   resultSize=input->resultSize;
-  //   sumsCache.insert({sInfo, 0});
-
-  //   vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, resultCol, &sInfo]() {
-  //     uint64_t sum=0;
-  //     for (auto iter=resultCol,limit=iter+input->resultSize;iter!=limit;++iter)
-  //       sum+=*iter;
-  //     sumsCache[sInfo] = sum;
-  //   }));
-  //   for_each(vf.begin(), vf.end(), [](future<void> &x) {
-  //     x.wait();
-  //   });
-  // }
-
-  // for (auto &sInfo: colInfo) {
-  //   checkSums.push_back(sumsCache[sInfo]);
-  // }
+  for_each(vf.begin(), vf.end(), [](future<void> &x) {
+    x.wait();
+  });
 }
 //---------------------------------------------------------------------------

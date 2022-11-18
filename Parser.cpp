@@ -294,7 +294,7 @@ void QueryInfo::parseQuery(string& rawQuery)
   resolveRelationIds();
 
 #if PRINT_LOG
-  log_print("original query: {}\nrewrite query: {}\n", rawQuery, dumpText());
+  // cerr << "original query: " << rawQuery << "\nrewrite query:" << dumpText() << endl;
 #endif
 }
 //---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ using namespace std::chrono;
 int Joiner::query_count = 0;
 int Joiner::batch = 0;
 
+std::vector<Relation> Joiner::relations;
 void Joiner::addRelation(const char* fileName)
 // Loads a relation from disk
 {

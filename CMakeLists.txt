@@ -27,7 +27,7 @@ target_include_directories(database PUBLIC
 
 OPTION(FORCE_TESTS "Build tests, regardless of build type." ON)
 if (CMAKE_BUILD_TYPE MATCHES "[Dd][Ee][Bb][Uu][Gg]" OR FORCE_TESTS)
-    add_subdirectory(test)
+    # add_subdirectory(test)
 endif()
 
 add_executable(Driver main.cpp)
