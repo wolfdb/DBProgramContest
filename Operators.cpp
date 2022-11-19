@@ -686,65 +686,174 @@ void Join::buildAndProbe(unsigned bucket)
         copyRightData.push_back(rightPart.back());
       }
 
-      if (leftPartLen > HASH_THRESHOLD) {
-        if (cntBuilding) {
-          for (uint64_t i = start; i < end; i++) {
-            auto rightKey = rightKeyColumn[i];
-            if (hashTableC->find(rightKey) == hashTableC->end())
-              continue;
-            uint64_t leftCnt = hashTableC->at(rightKey);
-            uint64_t rightCnt = right->counted ? copyRightData.back()[i] : 1;
-            if (counted == 1) {
-              auto data = (leftColSize == 1) ? rightKey : copyRightData[0][i];
-              localResults[0].push_back(data);
-              localResults[1].push_back(leftCnt * rightCnt);
-            } else {
-              unsigned relColId = 0;
-              for (unsigned cId=0;cId<leftColSize;++cId) // if exist
-                localResults[relColId++].push_back(rightKey);
-              for (unsigned cId=0;cId<rightColSize;++cId)
-                localResults[relColId++].push_back(copyRightData[cId][i]);
-              if (counted){
-                localResults[relColId].push_back(leftCnt * rightCnt);
+      if (!isParentSum()) {
+        if (leftPartLen > HASH_THRESHOLD) {
+          if (cntBuilding) {
+            for (uint64_t i = start; i < end; i++) {
+              auto rightKey = rightKeyColumn[i];
+              if (hashTableC->find(rightKey) == hashTableC->end())
+                continue;
+              uint64_t leftCnt = hashTableC->at(rightKey);
+              uint64_t rightCnt = right->counted ? copyRightData.back()[i] : 1;
+              if (counted == 1) {
+                auto data = (leftColSize == 1) ? rightKey : copyRightData[0][i];
+                localResults[0].push_back(data);
+                localResults[1].push_back(leftCnt * rightCnt);
+              } else {
+                unsigned relColId = 0;
+                for (unsigned cId=0;cId<leftColSize;++cId)
+                  localResults[relColId++].push_back(rightKey);
+                for (unsigned cId=0;cId<rightColSize;++cId)
+                  localResults[relColId++].push_back(copyRightData[cId][i]);
+                if (counted){
+                  localResults[relColId].push_back(leftCnt * rightCnt);
+                }
+              }
+            }
+          } else {
+            for (uint64_t i = start; i < end; i++) {
+              auto rightKey=rightKeyColumn[i];
+              auto range=hashTable->equal_range(rightKey);
+              for (auto iter=range.first;iter!=range.second;++iter) {
+                unsigned relColId=0;
+                for (unsigned cId=0;cId<leftColSize;++cId)
+                  localResults[relColId++].push_back(copyLeftData[cId][iter->second]);
+                for (unsigned cId=0;cId<rightColSize;++cId)
+                  localResults[relColId++].push_back(copyRightData[cId][i]);
+                if (counted){
+                  uint64_t leftCnt = left->counted ? copyLeftData[leftColSize][iter->second] : 1;
+                  uint64_t rightCnt = right->counted ? copyRightData[rightColSize][i] : 1;
+                  localResults[relColId].push_back(leftCnt * rightCnt);
+                }
               }
             }
           }
-        } else {
-          for (uint64_t i = start; i < end; i++) {
-            auto rightKey=rightKeyColumn[i];
-            auto range=hashTable->equal_range(rightKey);
-            for (auto iter=range.first;iter!=range.second;++iter) {
-              unsigned relColId=0;
-              for (unsigned cId=0;cId<leftColSize;++cId)
-                localResults[relColId++].push_back(copyLeftData[cId][iter->second]);
-              for (unsigned cId=0;cId<rightColSize;++cId)
-                localResults[relColId++].push_back(copyRightData[cId][i]);
-              if (counted){
-                uint64_t leftCnt = left->counted ? copyLeftData[leftColSize][iter->second] : 1;
-                uint64_t rightCnt = right->counted ? copyRightData[rightColSize][i] : 1;
-                localResults[relColId].push_back(leftCnt * rightCnt);
+        } else {  // nested loop join
+          for (uint64_t i = 0; i < leftPartLen; i++) {
+            for (uint64_t j = start; j < end; j++) {
+              if (leftKeyColumn[i] == rightKeyColumn[j]) {
+                unsigned relColId=0;
+                for (unsigned cId=0;cId<leftColSize;++cId)
+                  localResults[relColId++].push_back(copyLeftData[cId][i]);
+                for (unsigned cId=0;cId<rightColSize;++cId)
+                  localResults[relColId++].push_back(copyRightData[cId][j]);
+                if (counted){
+                  uint64_t leftCnt = left->counted ? copyLeftData[leftColSize][i] : 1;
+                  uint64_t rightCnt= right->counted ? copyRightData[rightColSize][j] : 1;
+                  localResults[relColId].push_back(leftCnt * rightCnt);
+                }
               }
             }
           }
         }
-      } else {  // nested loop join
-        for (uint64_t i = 0; i < leftPartLen; i++) {
-          for (uint64_t j = start; j < end; j++) {
-            if (leftKeyColumn[i] == rightKeyColumn[j]) {
-              unsigned relColId=0;
+      } else {  // push_down
+        if (leftPartLen > HASH_THRESHOLD) {
+          if (cntBuilding) {
+            if (counted == 1) {
+              localResults[0].push_back(0);
+              localResults[1].push_back(1);
+            } else {
+              unsigned relColId = 0;
               for (unsigned cId=0;cId<leftColSize;++cId)
-                localResults[relColId++].push_back(copyLeftData[cId][i]);
+                localResults[relColId++].push_back(0);
               for (unsigned cId=0;cId<rightColSize;++cId)
-                localResults[relColId++].push_back(copyRightData[cId][j]);
-              if (counted){
-                uint64_t leftCnt = left->counted ? copyLeftData[leftColSize][i] : 1;
-                uint64_t rightCnt= right->counted ? copyRightData[rightColSize][j] : 1;
-                localResults[relColId].push_back(leftCnt * rightCnt);
+                localResults[relColId++].push_back(0);
+              if (counted) {
+                localResults[relColId].push_back(1);
+              }
+            }
+            for (uint64_t i = start; i < end; i++) {
+              auto rightKey = rightKeyColumn[i];
+              if (hashTableC->find(rightKey) == hashTableC->end())
+                continue;
+              uint64_t leftCnt = hashTableC->at(rightKey);
+              uint64_t rightCnt = right->counted ? copyRightData.back()[i] : 1;
+              uint64_t factor = leftCnt * rightCnt;
+              if (counted == 1) {
+                auto data = (leftColSize == 1) ? rightKey : copyRightData[0][i];
+                localResults[0][0] += data * factor;
+              } else {
+                unsigned relColId = 0;
+                if (counted) {
+                  for (unsigned cId=0;cId<leftColSize;++cId)
+                    localResults[relColId++][0] += rightKey * factor;
+                  for (unsigned cId=0;cId<rightColSize;++cId)
+                    localResults[relColId++][0] += copyRightData[cId][i] * factor;
+                } else {
+                  for (unsigned cId=0;cId<leftColSize;++cId)
+                    localResults[relColId++][0] += rightKey;
+                  for (unsigned cId=0;cId<rightColSize;++cId)
+                    localResults[relColId++][0] += copyRightData[cId][i];
+                }
+                
+              }
+            }
+          } else {
+            unsigned relColId=0;
+            for (unsigned cId=0;cId<leftColSize;++cId)
+              localResults[relColId++].push_back(0);
+            for (unsigned cId=0;cId<rightColSize;++cId)
+              localResults[relColId++].push_back(0);
+            if (counted) {
+              localResults[relColId].push_back(1);
+            }
+            for (uint64_t i = start; i < end; i++) {
+              auto rightKey = rightKeyColumn[i];
+              auto range = hashTable->equal_range(rightKey);
+              uint64_t rightCnt = right->counted ? copyRightData[rightColSize][i] : 1;
+              for (auto it = range.first; it != range.second; ++it) {
+                relColId=0;
+                if (counted) {
+                  uint64_t leftCnt = left->counted ? copyLeftData[leftColSize][it->second] : 1;
+                  uint64_t factor = leftCnt * rightCnt;
+                  for (unsigned cId=0;cId<leftColSize;++cId)
+                    localResults[relColId++][0] += copyLeftData[cId][it->second] * factor;
+                  for (unsigned cId=0;cId<rightColSize;++cId)
+                    localResults[relColId++][0] += copyRightData[cId][i] * factor;
+                } else {
+                  for (unsigned cId=0;cId<leftColSize;++cId)
+                    localResults[relColId++][0] += copyLeftData[cId][it->second];
+                  for (unsigned cId=0;cId<rightColSize;++cId)
+                    localResults[relColId++][0] += copyRightData[cId][i];
+                }
+              }
+            }
+          }
+        } else {  // nest loop join
+          unsigned relColId=0;
+          for (unsigned cId=0;cId<leftColSize;++cId)
+            localResults[relColId++].push_back(0);
+          for (unsigned cId=0;cId<rightColSize;++cId)
+            localResults[relColId++].push_back(0);
+          if (counted) {
+            localResults[relColId].push_back(1);
+          }
+          for (uint64_t i = 0; i < leftPartLen; i++) {
+            uint64_t leftCnt = left->counted ? copyLeftData[leftColSize][i] : 1;
+            for (uint64_t j = start; j < end; j++) {
+              if (leftKeyColumn[i] == rightKeyColumn[j]) {
+                relColId=0;
+                if (counted) {
+                  uint64_t rightCnt= right->counted ? copyRightData[rightColSize][j] : 1;
+                  uint64_t factor = leftCnt * rightCnt;
+                  for (unsigned cId=0;cId<leftColSize;++cId)
+                    localResults[relColId++][0] += copyLeftData[cId][i] * factor;
+                  for (unsigned cId=0;cId<rightColSize;++cId) {
+                    localResults[relColId++][0] += copyRightData[cId][j] * factor;
+                  }
+                } else {
+                  for (unsigned cId=0;cId<leftColSize;++cId)
+                    localResults[relColId++][0] += copyLeftData[cId][i];
+                  for (unsigned cId=0;cId<rightColSize;++cId) {
+                    localResults[relColId++][0] += copyRightData[cId][j];
+                  }
+                }
               }
             }
           }
         }
       }
+      
       if (localResults[0].size() == 0) {
         return 0;
       }
