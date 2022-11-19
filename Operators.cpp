@@ -266,8 +266,8 @@ void Join::run()
     swap(requestedColumnsLeft,requestedColumnsRight);
   }
 
-  auto leftInputData=left->getResults();
-  auto rightInputData=right->getResults();
+  auto &leftInputData=left->getResults();
+  auto &rightInputData=right->getResults();
 
   // Resolve the input columns
   unsigned resColId=0;
@@ -300,12 +300,168 @@ void Join::run()
     counted = 2;
   }
 
-  log_print("leftBinding: {}, leftColId: {}  rightBinding: {}, rightColId: {}\n", pInfo.left.binding, pInfo.left.colId, pInfo.right.binding, pInfo.right.colId);
+  // log_print("leftBinding: {}, leftColId: {}  rightBinding: {}, rightColId: {}\n", pInfo.left.binding, pInfo.left.colId, pInfo.right.binding, pInfo.right.colId);
 
   colId[0]=left->resolve(pInfo.left);
   colId[1]=right->resolve(pInfo.right);
   auto leftResultSize = left->resultSize;
   auto rightResultSize = right->resultSize;
+
+  // use nest loop join directly
+  if (leftResultSize <= 8) {
+    tmpResults.emplace_back();
+    std::vector<std::vector<uint64_t>> leftData(leftInputData.size(), std::vector<uint64_t>(leftResultSize));
+    std::vector<Column<uint64_t>::Iterator> colIt;
+    for (unsigned i = 0; i < leftInputData.size(); i++) {
+      colIt.push_back(leftInputData[i].begin(0));
+    }
+
+    uint64_t offset = 0;
+    for (uint64_t i = 0; i < leftResultSize; i++) {
+      for (unsigned j = 0; j < leftInputData.size(); j++) {
+        leftData[j][offset] = *(colIt[j]);
+        ++(colIt[j]);
+      }
+      offset ++;
+    }
+
+    // cerr << leftResultSize << endl;
+    auto task_cnt = std::min((uint32_t)(rightResultSize / MIN_PARTITION_TABLE_SIZE), MAX_TASK_CNT);
+    if (task_cnt == 0) task_cnt = 1;
+    tmpResults[0].resize(task_cnt);
+    for (int i = 0; i < requestedColumns.size(); i++) {
+      results.emplace_back(task_cnt);
+    }
+    if (counted) {
+      results.emplace_back(task_cnt);
+    }
+    uint64_t step = rightResultSize / task_cnt;
+    uint64_t remain = rightResultSize % task_cnt;
+    std::vector<std::future<size_t>> vf;
+    uint64_t start = 0;
+    for (int i = 0; i < task_cnt; i++) {
+      uint64_t len = step;
+      if (remain) {
+        len++;
+        remain--;
+      }
+      vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, &leftData, leftResultSize, taskid = i, start, end = start+len]() -> size_t {
+        uint64_t *leftKeyColumn = leftData[colId[0]].data();
+        auto &rightData = right->getResults();
+        auto rightIter = rightData[colId[1]].begin(start);
+        std::vector<Column<uint64_t>::Iterator> copyRightIters;
+        vector<uint64_t*> copyLeftData;
+        vector<vector<uint64_t>> &localResults = tmpResults[0][taskid];
+        unsigned leftColSize = requestedColumnsLeft.size();
+        unsigned rightColSize = requestedColumnsRight.size();
+        unsigned resultColSize = requestedColumns.size();
+
+        for (unsigned j = 0; j < requestedColumns.size(); j++) {
+          localResults.emplace_back();
+        }
+        if (counted) {
+          localResults.emplace_back();
+        }
+
+        for (auto &info: requestedColumnsLeft) {
+          copyLeftData.push_back(leftData[left->resolve(info)].data());
+        }
+        if (left->counted) {
+          copyLeftData.push_back(leftData.back().data());
+        }
+
+        for (auto &info: requestedColumnsRight) {
+          copyRightIters.push_back(rightData[right->resolve(info)].begin(start));
+        }
+        if (right->counted) {
+          copyRightIters.push_back(rightData.back().begin(start));
+        }
+
+        if (!isParentSum()) {
+          for (uint64_t j = start; j < end; j++, ++rightIter) {
+            for (uint64_t k = 0; k < leftResultSize; k++) {
+              if (leftKeyColumn[k] == *rightIter) {
+                unsigned relColId=0;
+                for (unsigned cId=0;cId<leftColSize;++cId)
+                  localResults[relColId++].push_back(copyLeftData[cId][k]);
+                for (unsigned cId=0;cId<rightColSize;++cId)
+                  localResults[relColId++].push_back(*copyRightIters[cId]);
+                if (counted) {
+                  uint64_t leftCnt = left->counted ? copyLeftData[leftColSize][k] : 1;
+                  uint64_t rightCnt= right->counted ? *copyRightIters[rightColSize] : 1;
+                  localResults[relColId].push_back(leftCnt * rightCnt);
+                }
+              }
+            }
+            for (unsigned k = 0; k < copyRightIters.size(); k++) {
+              ++(copyRightIters[k]);
+            }
+          }
+        } else {  // push down
+          unsigned relColId=0;
+          for (unsigned cId=0;cId<leftColSize;++cId)
+            localResults[relColId++].push_back(0);
+          for (unsigned cId=0;cId<rightColSize;++cId)
+            localResults[relColId++].push_back(0);
+          if (counted) {
+            localResults[relColId].push_back(1);
+          }
+
+          for (uint64_t j = start; j < end; j++, ++rightIter) {
+            for (uint64_t k = 0; k < leftResultSize; k++) {
+              if (leftKeyColumn[k] == *rightIter) {
+                unsigned relColId=0;
+                if (counted) {
+                  uint64_t leftCnt = left->counted ? copyLeftData[leftColSize][k] : 1;
+                  uint64_t rightCnt= right->counted ? *copyRightIters[rightColSize] : 1;
+                  uint64_t factor = leftCnt * rightCnt;
+                  for (unsigned cId=0;cId<leftColSize;++cId)
+                    localResults[relColId++][0] += copyLeftData[cId][k] * factor;
+                  for (unsigned cId=0;cId<rightColSize;++cId)
+                    localResults[relColId++][0] += *copyRightIters[cId] * factor;
+                } else {
+                  for (unsigned cId=0;cId<leftColSize;++cId)
+                    localResults[relColId++][0] += copyLeftData[cId][k];
+                  for (unsigned cId=0;cId<rightColSize;++cId)
+                    localResults[relColId++][0] += *copyRightIters[cId];
+                }
+              }
+            }
+            for (unsigned k = 0; k < copyRightIters.size(); k++) {
+              ++(copyRightIters[k]);
+            }
+          }
+        }
+
+        if (localResults[0].size() == 0) {
+          return 0;
+        }
+        for (unsigned i = 0; i < resultColSize; i++) {
+          results[i].addTuples(taskid, localResults[i].data(), localResults[i].size());
+        }
+        if (counted) {
+          results[resultColSize].addTuples(taskid, localResults[resultColSize].data(), localResults[resultColSize].size());
+        }
+        return localResults[0].size();
+      }));
+      start += len;
+    }
+
+    size_t pcnt = 0;
+    for_each(vf.begin(), vf.end(), [&pcnt](future<size_t> &x) {
+      pcnt += x.get();
+    });
+    resultSize = pcnt;
+
+    for (unsigned cId=0;cId<requestedColumns.size();++cId) {
+      results[cId].fix();
+    }
+    if (counted) {
+      results[requestedColumns.size()].fix();
+    }
+
+    return;
+  }
 
   // cerr << "leftResultSize: " << leftResultSize << "; rightResultSize: " << rightResultSize << endl;
 
@@ -612,7 +768,7 @@ void Join::buildAndProbe(unsigned bucket)
   auto &leftPart = partition[0][bucket];
   auto leftPartLen = partitionLength[0][bucket];
   auto &rightPart = partition[1][bucket];
-  auto rightPartLen = partitionLength[1][bucket];
+  // auto rightPartLen = partitionLength[1][bucket];
   if (leftPartLen > HASH_THRESHOLD) {
     uint64_t *leftKeyColumn = leftPart[colId[0]];
     if (cntBuilding) {
@@ -648,7 +804,7 @@ void Join::buildAndProbe(unsigned bucket)
       step ++;
       remain --;
     }
-    vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, bucket, probeid = i, &leftPart, leftPartLen, &rightPart, rightPartLen, start, end = start + step]() -> size_t {
+    vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, bucket, probeid = i, &leftPart, leftPartLen, &rightPart, start, end = start + step]() -> size_t {
       uint64_t *leftKeyColumn = leftPart[colId[0]];
       uint64_t *rightKeyColumn = rightPart[colId[1]];
       vector<uint64_t*> copyLeftData, copyRightData;
