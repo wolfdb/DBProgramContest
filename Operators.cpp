@@ -903,6 +903,8 @@ void SelfJoin::run()
   uint32_t step = inputResultSize / task_cnt;
   uint32_t remain = inputResultSize % task_cnt;
 
+  // log_print("SelfJoin: input->resultSize {}\n", inputResultSize);
+
   for (auto& iu : requiredIUs) {
     auto id=input->resolve(iu);
     copyData.emplace_back(&inputData[id]);
@@ -950,28 +952,56 @@ void SelfJoin::run()
         colIt.push_back(copyData[i]->begin(start));
       }
       std::unordered_map<uint64_t, uint64_t> cntMap;
-      for (uint64_t i = start; i < end; i++) {
-        if (*leftColIt==*rightColIt) {
-          if (counted == 1) {
-            auto dup = cntMap.find(*(colIt[0]));
-            uint64_t dupCnt = (input->counted) ? *(colIt[1]) : 1;
-            if (dup != cntMap.end()){
-              localResults[1][dup->second] += dupCnt;
+      if (!this->isParentSum()) {
+        for (uint64_t i = start; i < end; i++) {
+          if (*leftColIt==*rightColIt) {
+            if (counted == 1) {
+              auto dup = cntMap.find(*(colIt[0]));
+              uint64_t dupCnt = (input->counted) ? *(colIt[1]) : 1;
+              if (dup != cntMap.end()){
+                localResults[1][dup->second] += dupCnt;
+              } else {
+                localResults[0].push_back(*(colIt[0]));
+                localResults[1].push_back(dupCnt);
+                cntMap.insert(dup, pair<uint64_t, uint64_t>(*(colIt[0]), localResults[1].size()-1));
+              }
             } else {
-              localResults[0].push_back(*(colIt[0]));
-              localResults[1].push_back(dupCnt);
-              cntMap.insert(dup, pair<uint64_t, uint64_t>(*(colIt[0]), localResults[1].size()-1));
-            }
-          } else {
-            for (unsigned cId=0;cId<colSize;++cId) {
-              localResults[cId].push_back(*(colIt[cId]));
+              for (unsigned cId=0;cId<colSize;++cId) {
+                localResults[cId].push_back(*(colIt[cId]));
+              }
             }
           }
+          ++leftColIt;
+          ++rightColIt;
+          for (unsigned j=0; j<colSize; j++) {
+            ++colIt[j];
+          }
         }
-        ++leftColIt;
-        ++rightColIt;
-        for (unsigned i=0; i<colSize; i++) {
-          ++colIt[i];
+      } else {
+        if (counted == 1) {
+          localResults[0].push_back(0);
+          localResults[1].push_back(1);
+        } else {
+          for (unsigned cId=0;cId<colSize;++cId) {
+            localResults[cId].push_back(0);
+          }
+        }
+
+        for (uint64_t i = start; i < end; i++, ++leftColIt, ++rightColIt) {
+          if (*leftColIt == *rightColIt) {
+            // log_print("SelfJoin: leftKe: {} rightkey: {}\n", *leftColIt, *rightColIt);
+            if (counted == 1) {
+              uint64_t dupCnt = (input->counted) ? *(colIt[1]) : 1;
+              localResults[0][0] += (*(colIt[0])) * dupCnt;
+            } else {
+              for (unsigned cId=0;cId<colSize;++cId) {
+                localResults[cId][0] += *(colIt[cId]);
+              }
+            }
+          }
+          for (unsigned j=0; j<colSize; j++) {
+            ++colIt[j];
+          }
         }
       }
       for (int i=0; i<colSize; i++) {
@@ -1010,45 +1040,63 @@ void Checksum::run()
   if (input->resultSize == 0) {
     return;
   }
-  uint64_t task_cnt = std::min((uint32_t)(input->resultSize / MIN_PROBE_ITEM_CNT), MAX_TASK_CNT);
-  if (task_cnt == 0) task_cnt = 1;
-  uint64_t step = input->resultSize / task_cnt;
-  uint64_t remain = input->resultSize % task_cnt;
 
-  uint64_t start = 0;
-  std::vector<std::future<void>> vf;
-  for (int i = 0; i < task_cnt; i++) {
-    uint64_t len = step;
-    if (remain) {
-      remain --;
-      len ++;
+  auto& inputData=input->getResults();
+  int sumIndex = 0;
+  for (auto &sInfo: colInfo) {
+    auto colId = input->resolve(sInfo);
+    auto inputColIt = inputData[colId].begin(0);
+    uint64_t sum = 0;
+    for (uint64_t i= 0; i< input->resultSize; i++, ++inputColIt) {
+      sum += (*inputColIt);
     }
-    vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, start, end = start + len]() {
-      auto& inputData=input->getResults();
-      int sumIndex = 0;
-      for (auto &sInfo: colInfo) {
-        auto colId = input->resolve(sInfo);
-        auto inputColIt = inputData[colId].begin(start);
-        uint64_t sum = 0;
-        // cerr << input->counted << endl;
-        if (input->counted) {
-          auto countColIt = inputData.back().begin(start);
-          for (int i = start; i < end; i++, ++inputColIt, ++countColIt) {
-            sum += (*inputColIt) * (*countColIt);
-          }
-        } else {
-          for (int i=start; i < end; i++,++inputColIt){
-            sum += (*inputColIt);
-          }
-        }
-        __sync_fetch_and_add(&checkSums[sumIndex++], sum);
-      }
-    }));
-    start += len;
+    checkSums[sumIndex++] = sum;
   }
+  // if (input->resultSize > MIN_PROBE_ITEM_CNT) {
+  //   cerr << "resultSize: " << input->resultSize << endl;
+  // }
+  // uint64_t task_cnt = std::min((uint32_t)(input->resultSize / MIN_PROBE_ITEM_CNT), MAX_TASK_CNT);
+  // if (task_cnt == 0) task_cnt = 1;
+  // uint64_t step = input->resultSize / task_cnt;
+  // uint64_t remain = input->resultSize % task_cnt;
 
-  for_each(vf.begin(), vf.end(), [](future<void> &x) {
-    x.wait();
-  });
+  // uint64_t start = 0;
+  // std::vector<std::future<void>> vf;
+  // for (int i = 0; i < task_cnt; i++) {
+  //   uint64_t len = step;
+  //   if (remain) {
+  //     remain --;
+  //     len ++;
+  //   }
+  //   vf.push_back(std::async(std::launch::async | std::launch::deferred, [this, start, end = start + len]() {
+  //     auto& inputData=input->getResults();
+  //     int sumIndex = 0;
+  //     for (auto &sInfo: colInfo) {
+  //       auto colId = input->resolve(sInfo);
+  //       auto inputColIt = inputData[colId].begin(start);
+  //       uint64_t sum = 0;
+  //       for (uint64_t i= start; i< end; i++, ++inputColIt) {
+  //         sum += (*inputColIt);
+  //       }
+  //       // cerr << input->counted << endl;
+  //       // if (input->counted) {
+  //       //   auto countColIt = inputData.back().begin(start);
+  //       //   for (int i = start; i < end; i++, ++inputColIt, ++countColIt) {
+  //       //     sum += (*inputColIt) * (*countColIt);
+  //       //   }
+  //       // } else {
+  //       //   for (int i=start; i < end; i++,++inputColIt){
+  //       //     sum += (*inputColIt);
+  //       //   }
+  //       // }
+  //       __sync_fetch_and_add(&checkSums[sumIndex++], sum);
+  //     }
+  //   }));
+  //   start += len;
+  // }
+
+  // for_each(vf.begin(), vf.end(), [](future<void> &x) {
+  //   x.wait();
+  // });
 }
 //---------------------------------------------------------------------------
