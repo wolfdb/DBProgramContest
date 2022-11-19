@@ -313,6 +313,7 @@ void Join::run()
   if (partitionCnt < 32) {
     partitionCnt = 32;
   }
+  // partitionCnt = next_pow_of_2(partitionCnt);
 
   partitionTable[0].reserve(left->getResultsSize());
   partitionTable[1].reserve(right->getResultsSize());
