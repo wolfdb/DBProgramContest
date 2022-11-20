@@ -150,7 +150,9 @@ namespace std {
   };
 };
 //---------------------------------------------------------------------------
+class Joiner;
 class QueryInfo {
+friend Joiner;
    public:
    /// The relation ids
    std::vector<RelationId> relationIds;
@@ -169,6 +171,8 @@ class QueryInfo {
    bool impossible = false;
    /// Reset query info
    void clear();
+   /// relation eCost map of [binding, eCost]
+   std::unordered_map<unsigned, uint64_t> relationCosts;
 
    private:
    /// Parse a single predicate

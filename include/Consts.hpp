@@ -46,4 +46,4 @@
 
 #define USE_PARALLEL_BUILD_HASH_TABLE 1
 
-#define PRINT_LOG 0
+// #define PRINT_LOG 1

@@ -7,6 +7,7 @@
 #include "Log.hpp"
 #endif
 #include "Operators.hpp"
+#include "Joiner.hpp"
 //---------------------------------------------------------------------------
 using namespace std;
 //---------------------------------------------------------------------------
@@ -61,9 +62,28 @@ void QueryInfo::addFilter(SelectInfo &si, uint64_t constant, char compType) {
   if (filterMap.find(si) == filterMap.end()) {
     filterMap[si].push_back({si, constant, FilterInfo::Comparison(compType)});
   } else {
+    auto relId = relationIds[si.binding];
+    auto &relation = Joiner::relations[relId];
+    auto tmax = relation.sample_maxs[si.colId];
+    auto tmin = relation.sample_mins[si.colId];
     auto &filters = filterMap[si];
     bool should_clear = false;
     bool should_add = filters.size() < 2;
+    if (compType == '=' && (constant > tmax || constant < tmin)) {
+      cerr << "find a impossible =" << endl;
+      impossible = true;
+      return;
+    }
+    if (compType == '>' && constant > tmax) {
+      cerr << "find a impossible >" << endl;
+      impossible = true;
+      return;
+    }
+    if (compType == '<' && constant < tmin) {
+      cerr << "find a impossible <" << endl;
+      impossible = true;
+      return;
+    }
     // check each filter
     for (auto &filter : filters) {
       switch (filter.comparison)
@@ -308,6 +328,7 @@ void QueryInfo::clear()
   selectInfoMap.clear();
   predicatesSet.clear();
   filterMap.clear();
+  relationCosts.clear();
   impossible = false;
 }
 //---------------------------------------------------------------------------

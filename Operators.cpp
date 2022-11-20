@@ -59,7 +59,9 @@ void Scan::run()
       results[i].fix();
     }
   }
-  log_print("scan resultSize: {}\n", resultSize);
+#if PRINT_LOG
+  // log_print("scan resultSize: {}\n", resultSize);
+#endif
 }
 //---------------------------------------------------------------------------
 bool FilterScan::require(SelectInfo &info)

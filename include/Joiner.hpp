@@ -26,7 +26,7 @@ class Joiner {
   void buildIndex(const std::vector<QueryInfo> &qq);
 
   /// estimate the cost of SelectInfo
-  uint64_t estimateCost(const SelectInfo &info, const QueryInfo& query);
+  void estimateCost(QueryInfo& query);
 
   /// the orignal left-deep join tree
   std::unique_ptr<Operator> buildPlanTree(QueryInfo& query);

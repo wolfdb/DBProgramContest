@@ -5,6 +5,7 @@
 #include "Parser.hpp"
 #include "Log.hpp"
 #include "Consts.hpp"
+#include "unistd.h"
 
 using namespace std;
 using namespace std::chrono;
@@ -51,15 +52,15 @@ int main(int argc, char* argv[]) {
    QueryInfo i;
    work_load = joiner.relations[0].rowCount;
    int32_t batch = 0;
-   milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+   // milliseconds start = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
    while (getline(cin, line)) {
       if (line == "F") {
          batch ++;
          continue; // End of a batch
       }
       actually_query = Joiner::query_count;
-      milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
-      log_print("batch: {}, before this query, execution time: {} ms, work_load {}\n", batch, end.count() - start.count(), work_load);
+      // milliseconds end = duration_cast< milliseconds >(system_clock::now().time_since_epoch());
+      // log_print("batch: {}, before this query, execution time: {} ms, work_load {}\n", batch, end.count() - start.count(), work_load);
       i.parseQuery(line);
       cout << joiner.join(i);
    }
